@@ -49,7 +49,12 @@ peg::parser!( grammar hiki_parser() for str {
         }
 
         // fn call
-        _ f:ident() "(" e:expression() ")" _ { Expression::FnCall(f.to_owned(), e.into())}
+        _ f:ident() "(" e:expression()? ")" _ {
+            match e {
+                None => Expression::FnCall(f.to_owned(), Expression::Void.into()),
+                Some(expr) => Expression::FnCall(f.to_owned(), expr.into())
+            }
+        }
 
         --
         // assignment
@@ -62,7 +67,10 @@ peg::parser!( grammar hiki_parser() for str {
         _ n:number() _ { n }
 
         // string
-        _ "'" t:$(['a'..='z' | 'A'..='Z' | ' ']+) "'" _ { Expression::String(t.to_owned()) }
+        _ "'" t:$([^'\'']+) "'" _ { Expression::String(t.to_owned()) }
+
+        // string
+        _ "\"" t:$([^'"']+) "\"" _ { Expression::String(t.to_owned()) }
 
         // void
         // _ "" _ { Expression::Void }
@@ -85,6 +93,8 @@ pub enum EvalError {
 
 fn interpret(exp: Expression, mem: &mut Mem) -> EvalResult {
     match exp {
+        Expression::Void => Ok(None),
+
         Expression::Number(i) => Ok(Some(i.to_string())),
 
         Expression::String(s) => Ok(Some(s)),
@@ -120,9 +130,10 @@ fn interpret(exp: Expression, mem: &mut Mem) -> EvalResult {
             let value =
                 interpret(*expr, mem)?.ok_or(EvalError::ValueError("value expected".to_owned()))?;
 
-            let builtin = BUILTINS
-                .get(&fn_name)
-                .ok_or(EvalError::ValueError("no such builtin found".to_owned()))?;
+            let builtin = BUILTINS.get(&fn_name).ok_or(EvalError::ValueError(format!(
+                "no such builtin found: '{}'",
+                fn_name
+            )))?;
             builtin(value);
             Ok(None)
         }
