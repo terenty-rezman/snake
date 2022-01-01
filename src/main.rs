@@ -72,38 +72,59 @@ peg::parser!( grammar hiki_parser() for str {
         = br() _ s:expression() ** "\n" br() _ { s }
 });
 
-fn interpret(exp: Expression, mem: &mut Mem) -> Option<String> {
+type AnyError = Box<dyn std::error::Error>;
+type EvalResult = Result<Option<String>, AnyError>;
+
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum EvalError {
+    #[error("{0}")]
+    ValueError(String),
+}
+
+fn interpret(exp: Expression, mem: &mut Mem) -> EvalResult {
     match exp {
-        Expression::Number(i) => Some(i.to_string()),
+        Expression::Number(i) => Ok(Some(i.to_string())),
 
-        Expression::String(s) => Some(s),
+        Expression::String(s) => Ok(Some(s)),
 
-        Expression::Ident(id) => {
-            let value = mem
-                .get(&id)
-                .expect(format!("'{}' variable not found", id).as_str());
-            Some(value.clone())
-        }
+        Expression::Ident(id) => match mem.get(&id) {
+            Some(value) => Ok(Some(value.clone())),
+            None => Err(EvalError::ValueError(format!("'{}' variable not found", id)).into()),
+        },
 
         Expression::Assignment(var_name, expr) => {
-            let value = interpret(*expr, mem).unwrap();
-            mem.insert(var_name, value);
-            None
+            let value = interpret(*expr, mem)?;
+            match value {
+                None => Err(EvalError::ValueError("value expected".to_owned()).into()),
+                Some(value) => {
+                    mem.insert(var_name, value);
+                    Ok(None)
+                }
+            }
         }
 
         Expression::Add(expr_1, expr_2) => {
-            let value_1 = interpret(*expr_1, mem).expect("value expected");
-            let value_2 = interpret(*expr_2, mem).expect("value expected");
+            let value_1 = interpret(*expr_1, mem)?
+                .ok_or(EvalError::ValueError("value expected".to_owned()))?;
+            let value_2 = interpret(*expr_2, mem)?
+                .ok_or(EvalError::ValueError("value expected".to_owned()))?;
 
-            Some((value_1.parse::<i64>().unwrap() + value_2.parse::<i64>().unwrap()).to_string())
+            Ok(Some(
+                (value_1.parse::<i64>()? + value_2.parse::<i64>()?).to_string(),
+            ))
         }
 
         Expression::FnCall(fn_name, expr) => {
-            let value = interpret(*expr, mem).expect("value expected");
+            let value =
+                interpret(*expr, mem)?.ok_or(EvalError::ValueError("value expected".to_owned()))?;
 
-            let builtin = BUILTINS.get(&fn_name).expect("no such builtin found");
+            let builtin = BUILTINS
+                .get(&fn_name)
+                .ok_or(EvalError::ValueError("no such builtin found".to_owned()))?;
             builtin(value);
-            None
+            Ok(None)
         }
         _ => unimplemented!(),
     }
@@ -141,8 +162,14 @@ fn repl(mem: &mut Mem) {
             Ok(mut expr_list) => {
                 // interpret 1st line
                 let expr = expr_list.remove(0);
-                if let Some(result) = interpret(expr, mem) {
-                    println!("{}", result);
+
+                match interpret(expr, mem) {
+                    Err(err) => println!("Error: {}", &err),
+                    Ok(result) => {
+                        if let Some(result) = result {
+                            println!("{}", result);
+                        }
+                    }
                 }
             }
         }
@@ -172,9 +199,9 @@ fn test_parser() {
         // interpret each expr in ast
         Ok(ast) => {
             let mut memory = Mem::new();
-            
+
             for statement in ast {
-                interpret(statement, &mut memory);
+                interpret(statement, &mut memory).unwrap();
             }
             dbg!(memory);
         }
