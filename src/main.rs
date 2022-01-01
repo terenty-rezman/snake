@@ -29,11 +29,17 @@ fn bln_mem(mem: &mut Mem, args: &Vec<Rc<Object>>) -> () {
     println!("{:?}", mem);
 }
 
+fn bln_exit(mem: &mut Mem, args: &Vec<Rc<Object>>) -> () {
+    println!("sayōnara");
+    std::process::exit(0);
+}
+
 lazy_static! {
     static ref BUILTINS: HashMap<String, DynamicFcn> = {
         let mut m = HashMap::new();
         m.insert("print".to_owned(), bln_print as DynamicFcn);
         m.insert("mem".to_owned(), bln_mem as DynamicFcn);
+        m.insert("exit".to_owned(), bln_exit as DynamicFcn);
         m
     };
 }
@@ -72,6 +78,8 @@ peg::parser!( grammar hiki_parser() for str {
 
         // number
         _ n:number() _ { n }
+
+        _ "(" e:expression() ")" _ { e }
 
         // string
         _ "'" t:$([^'\'']+) "'" _ { Expression::String(t.to_owned()) }
@@ -176,6 +184,7 @@ fn interpret(exp: Expression, mem: &mut Mem) -> EvalResult {
             builtin(mem, &vec);
             Ok(None)
         }
+
         _ => unimplemented!(),
     }
 }
@@ -237,6 +246,7 @@ fn test_parser() {
         print('hello world')
         s = 'hello'
         print(s)
+        (2 + 3) + 3
     ";
 
     // try parse program into ast
