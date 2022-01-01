@@ -1,5 +1,7 @@
 use ::lazy_static::lazy_static;
 use ::std::collections::HashMap;
+use std::rc::Rc;
+
 use std::{
     io::{stdout, Write},
     result,
@@ -8,6 +10,7 @@ use std::{
 #[derive(Debug)]
 pub enum Expression {
     Void,
+    FnArgList(Vec<Expression>),
     Ident(String),
     Number(i64),
     String(String),
@@ -16,14 +19,21 @@ pub enum Expression {
     FnCall(String, Box<Expression>),
 }
 
-fn bln_print(s: String) -> () {
-    println!("{}", s);
+type DynamicFcn = fn(&mut Mem, &Vec<Rc<Object>>) -> ();
+
+fn bln_print(mem: &mut Mem, args: &Vec<Rc<Object>>) -> () {
+    println!("{:?}", args);
+}
+
+fn bln_mem(mem: &mut Mem, args: &Vec<Rc<Object>>) -> () {
+    println!("{:?}", mem);
 }
 
 lazy_static! {
-    static ref BUILTINS: HashMap<String, fn(String) -> ()> = {
+    static ref BUILTINS: HashMap<String, DynamicFcn> = {
         let mut m = HashMap::new();
-        m.insert("print".to_owned(), bln_print as fn(String) -> ());
+        m.insert("print".to_owned(), bln_print as DynamicFcn);
+        m.insert("mem".to_owned(), bln_mem as DynamicFcn);
         m
     };
 }
@@ -49,11 +59,8 @@ peg::parser!( grammar hiki_parser() for str {
         }
 
         // fn call
-        _ f:ident() "(" e:expression()? ")" _ {
-            match e {
-                None => Expression::FnCall(f.to_owned(), Expression::Void.into()),
-                Some(expr) => Expression::FnCall(f.to_owned(), expr.into())
-            }
+        _ f:ident() "(" e:expression() ** "," ")" _ {
+            Expression::FnCall(f.to_owned(), Expression::FnArgList(e).into())
         }
 
         --
@@ -71,9 +78,6 @@ peg::parser!( grammar hiki_parser() for str {
 
         // string
         _ "\"" t:$([^'"']+) "\"" _ { Expression::String(t.to_owned()) }
-
-        // void
-        // _ "" _ { Expression::Void }
     }
 
     pub rule program() -> Vec<Expression>
@@ -81,7 +85,7 @@ peg::parser!( grammar hiki_parser() for str {
 });
 
 type AnyError = Box<dyn std::error::Error>;
-type EvalResult = Result<Option<String>, AnyError>;
+type EvalResult = Result<Option<Rc<Object>>, AnyError>;
 
 use thiserror::Error;
 
@@ -91,17 +95,36 @@ pub enum EvalError {
     ValueError(String),
 }
 
+
+#[derive(Debug)]
+enum Object {
+    Str(String),
+    Number(i64),
+    Array(Vec<Rc<Object>>)
+}
+
 fn interpret(exp: Expression, mem: &mut Mem) -> EvalResult {
     match exp {
         Expression::Void => Ok(None),
 
-        Expression::Number(i) => Ok(Some(i.to_string())),
+        Expression::Number(i) => Ok(Some(Object::Number(i).into())),
 
-        Expression::String(s) => Ok(Some(s)),
+        Expression::String(s) => Ok(Some(Object::Str(s).into())),
 
         Expression::Ident(id) => match mem.get(&id) {
             Some(value) => Ok(Some(value.clone())),
             None => Err(EvalError::ValueError(format!("'{}' variable not found", id)).into()),
+        },
+
+        Expression::FnArgList(v) => {
+            let mut results = Vec::new();
+            for e in v {
+                let r = interpret(e, mem)?
+                    .ok_or(EvalError::ValueError("value expected".to_owned()))?;
+                results.push(r);
+            }
+
+            Ok(Some(Object::Array(results).into()))
         },
 
         Expression::Assignment(var_name, expr) => {
@@ -121,20 +144,36 @@ fn interpret(exp: Expression, mem: &mut Mem) -> EvalResult {
             let value_2 = interpret(*expr_2, mem)?
                 .ok_or(EvalError::ValueError("value expected".to_owned()))?;
 
+            let value_1 = match *value_1 {
+                Object::Number(n) => n,
+                _ => Err(EvalError::ValueError("integer expected".to_owned()))?
+            };
+
+            let value_2 = match *value_2 {
+                Object::Number(n) => n,
+                _ => Err(EvalError::ValueError("integer expected".to_owned()))?
+            };
+
             Ok(Some(
-                (value_1.parse::<i64>()? + value_2.parse::<i64>()?).to_string(),
+                Object::Number(value_1 + value_2).into()
             ))
         }
 
         Expression::FnCall(fn_name, expr) => {
             let value =
-                interpret(*expr, mem)?.ok_or(EvalError::ValueError("value expected".to_owned()))?;
+                interpret(*expr, mem)?.ok_or(EvalError::ValueError("arg list expected".to_owned()))?;
 
             let builtin = BUILTINS.get(&fn_name).ok_or(EvalError::ValueError(format!(
                 "no such builtin found: '{}'",
                 fn_name
             )))?;
-            builtin(value);
+
+            let vec = match &*value {
+                Object::Array(v) => v,
+                _ => Err(EvalError::ValueError("integer expected".to_owned()))?
+            };
+
+            builtin(mem, &vec);
             Ok(None)
         }
         _ => unimplemented!(),
@@ -148,7 +187,7 @@ fn print_parse_error(err: &peg::error::ParseError<peg::str::LineCol>) {
     );
 }
 
-type Mem = std::collections::HashMap<String, String>;
+type Mem = std::collections::HashMap<String, Rc<Object>>;
 
 fn repl(mem: &mut Mem) {
     println!("\n💩 v0.1\n");
@@ -178,7 +217,7 @@ fn repl(mem: &mut Mem) {
                     Err(err) => println!("Error: {}", &err),
                     Ok(result) => {
                         if let Some(result) = result {
-                            println!("{}", result);
+                            println!("{:?}", result);
                         }
                     }
                 }
