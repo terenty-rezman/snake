@@ -55,8 +55,8 @@ peg::parser!( grammar hiki_parser() for str {
             s
         }
 
-    rule number() -> Expression
-        = n: $(['0'..='9']+) { Expression::Number(n.parse().unwrap()) }
+    rule number() -> i64
+        = n: $(['0'..='9']+) { n.parse().unwrap() }
 
     pub rule expression() -> Expression = precedence! {
         // a + b
@@ -64,20 +64,17 @@ peg::parser!( grammar hiki_parser() for str {
             Expression::Add(x.into(), y.into())
         }
 
+        --
         // fn call
         _ f:ident() "(" e:expression() ** "," ")" _ {
             Expression::FnCall(f.to_owned(), Expression::FnArgList(e).into())
         }
 
-        --
-        // assignment
-        _ i:ident() _ "=" _ n:expression() { Expression::Assignment(i.to_string(), n.into()) }
-
         // identificator
         _ i:ident() _ { Expression::Ident(i.to_string()) }
 
         // number
-        _ n:number() _ { n }
+        _ n:number() _ { Expression::Number(n) }
 
         _ "(" e:expression() ")" _ { e }
 
@@ -88,8 +85,10 @@ peg::parser!( grammar hiki_parser() for str {
         _ "\"" t:$([^'"']+) "\"" _ { Expression::String(t.to_owned()) }
     }
 
+    rule assignment() -> Expression = _ i:ident() _ "=" _ n:expression() { Expression::Assignment(i.to_string(), n.into()) }
+
     pub rule program() -> Vec<Expression>
-        = br() _ s:expression() ** "\n" br() _ { s }
+        = br() _ s:(assignment() / expression()) ** "\n" br() _ { s }
 });
 
 type AnyError = Box<dyn std::error::Error>;
@@ -103,6 +102,7 @@ pub enum EvalError {
     ValueError(String),
 }
 
+use EvalError::*;
 
 #[derive(Debug)]
 enum Object {
@@ -121,14 +121,14 @@ fn interpret(exp: Expression, mem: &mut Mem) -> EvalResult {
 
         Expression::Ident(id) => match mem.get(&id) {
             Some(value) => Ok(Some(value.clone())),
-            None => Err(EvalError::ValueError(format!("'{}' variable not found", id)).into()),
+            None => Err(ValueError(format!("'{}' variable not found", id)).into()),
         },
 
         Expression::FnArgList(v) => {
             let mut results = Vec::new();
             for e in v {
                 let r = interpret(e, mem)?
-                    .ok_or(EvalError::ValueError("value expected".to_owned()))?;
+                    .ok_or(ValueError("value expected".to_owned()))?;
                 results.push(r);
             }
 
@@ -138,7 +138,7 @@ fn interpret(exp: Expression, mem: &mut Mem) -> EvalResult {
         Expression::Assignment(var_name, expr) => {
             let value = interpret(*expr, mem)?;
             match value {
-                None => Err(EvalError::ValueError("value expected".to_owned()).into()),
+                None => Err(ValueError("value expected".to_owned()).into()),
                 Some(value) => {
                     mem.insert(var_name, value);
                     Ok(None)
@@ -148,18 +148,18 @@ fn interpret(exp: Expression, mem: &mut Mem) -> EvalResult {
 
         Expression::Add(expr_1, expr_2) => {
             let value_1 = interpret(*expr_1, mem)?
-                .ok_or(EvalError::ValueError("value expected".to_owned()))?;
+                .ok_or(ValueError("value expected".to_owned()))?;
             let value_2 = interpret(*expr_2, mem)?
-                .ok_or(EvalError::ValueError("value expected".to_owned()))?;
+                .ok_or(ValueError("value expected".to_owned()))?;
 
             let value_1 = match *value_1 {
                 Object::Number(n) => n,
-                _ => Err(EvalError::ValueError("integer expected".to_owned()))?
+                _ => Err(ValueError("integer expected".to_owned()))?
             };
 
             let value_2 = match *value_2 {
                 Object::Number(n) => n,
-                _ => Err(EvalError::ValueError("integer expected".to_owned()))?
+                _ => Err(ValueError("integer expected".to_owned()))?
             };
 
             Ok(Some(
@@ -169,16 +169,16 @@ fn interpret(exp: Expression, mem: &mut Mem) -> EvalResult {
 
         Expression::FnCall(fn_name, expr) => {
             let value =
-                interpret(*expr, mem)?.ok_or(EvalError::ValueError("arg list expected".to_owned()))?;
+                interpret(*expr, mem)?.ok_or(ValueError("arg list expected".to_owned()))?;
 
-            let builtin = BUILTINS.get(&fn_name).ok_or(EvalError::ValueError(format!(
+            let builtin = BUILTINS.get(&fn_name).ok_or(ValueError(format!(
                 "no such builtin found: '{}'",
                 fn_name
             )))?;
 
             let vec = match &*value {
                 Object::Array(v) => v,
-                _ => Err(EvalError::ValueError("integer expected".to_owned()))?
+                _ => Err(ValueError("integer expected".to_owned()))?
             };
 
             builtin(mem, &vec);
