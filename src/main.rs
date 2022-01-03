@@ -1,8 +1,12 @@
 use ::lazy_static::lazy_static;
-use peg::error::ExpectedSet;
 use ::std::collections::HashMap;
-use std::rc::Rc;
+use std::f32::consts::E;
+use std::os::windows::process;
+use peg::error::ExpectedSet;
+use std::fmt::Debug;
 use std::ops::Neg;
+use std::os::windows::prelude::OsStringExt;
+use std::rc::Rc;
 
 use std::{
     io::{stdout, Write},
@@ -13,6 +17,7 @@ use std::{
 pub enum Expression {
     Void,
     FnArgList(Vec<Expression>),
+    CodeBlock(Vec<Expression>),
     Ident(String),
     Number(i64),
     String(String),
@@ -51,9 +56,9 @@ lazy_static! {
     };
 }
 
-peg::parser!( grammar hiki_parser() for str {
-    rule _ = " "*
-    rule br() = "\n"*
+peg::parser!( grammar snake_parser() for str {
+    rule _ = [' ' | '\t']*
+    rule br() = ['\r' | '\n'] ['\n']?
 
     pub rule ident() -> &'input str
         = s: $(['a'..='z' | 'A'..='Z']['_' | 'a'..='z' | 'A'..='Z' | '0'..='9']*) {
@@ -90,6 +95,8 @@ peg::parser!( grammar hiki_parser() for str {
 
         _ "(" e:expression() ")" _ { e }
 
+        _ "{" _ br()* e:(assignment() / expression()) ** br() br()* _ "}" _ { Expression::CodeBlock(e) }
+
         // string
         _ "'" t:$([^'\'']+) "'" _ { Expression::String(t.to_owned()) }
 
@@ -100,7 +107,7 @@ peg::parser!( grammar hiki_parser() for str {
     rule assignment() -> Expression = _ i:ident() _ "=" _ n:expression() { Expression::Assignment(i.to_string(), n.into()) }
 
     pub rule program() -> Vec<Expression>
-        = br() _ s:(assignment() / expression()) ** "\n" br() _ { s }
+        = s:(assignment() / expression()) ** br() { s }
 });
 
 type AnyError = Box<dyn std::error::Error>;
@@ -155,8 +162,8 @@ fn interpret(exp: Expression, mem: &mut Mem) -> EvalResult {
 
         Expression::String(s) => Ok(Some(Rc::new(Object::Str(s)))),
 
-        Expression::Ident(id) => match mem.get(&id) {
-            Some(value) => Ok(Some(Rc::clone(value))),
+        Expression::Ident(id) => match mem.lookup(&id) {
+            Some(value) => Ok(Some(value)),
             None => Err(ValueError(format!("'{}' variable not found", id)).into()),
         },
 
@@ -175,10 +182,20 @@ fn interpret(exp: Expression, mem: &mut Mem) -> EvalResult {
             match value {
                 None => Err(ValueError("value expected".to_owned()).into()),
                 Some(value) => {
-                    mem.insert(var_name, value);
+                    mem.insert_or_modify(&var_name, value);
                     Ok(None)
                 }
             }
+        }
+
+        Expression::CodeBlock(expr_list) => {
+            let mut val = None;
+            mem.push_scope();
+            for expr in expr_list {
+                val = interpret(expr, mem)?;
+            }
+            mem.pop_scope();
+            Ok(val)
         }
 
         Expression::Add(expr_1, expr_2) => {
@@ -225,16 +242,77 @@ fn interpret(exp: Expression, mem: &mut Mem) -> EvalResult {
     }
 }
 
-fn print_parse_error(err: &peg::error::ParseError<peg::str::LineCol>) {
+fn print_parse_error(err: &peg::error::ParseError<peg::str::LineCol>, src: &str) {
+    let failed_char = src.chars().nth(err.location.offset).unwrap();
     println!(
-        "parse error: [line: {}, column: {}, offset: {}] expected: {}",
-        err.location.line, err.location.column, err.location.offset, err.expected
+        "parse error: [line: {}, column: {}, offset: {}] expected: {} got: '{}'",
+        err.location.line, err.location.column, err.location.offset, err.expected, failed_char
     );
 }
 
-type Mem = std::collections::HashMap<String, Rc<Object>>;
+use std::{collections, fs};
 
-fn repl(mem: &mut Mem) {
+type Scope = HashMap<String, Rc<Object>>;
+
+#[derive(Debug)]
+struct Mem {
+    mem: Vec<Scope>,
+}
+
+impl Mem {
+    fn new() -> Mem {
+        Mem {
+            mem: vec![Scope::new()],
+        }
+    }
+
+    fn push_scope(&mut self) {
+        self.mem.push(Scope::new());
+    }
+
+    fn pop_scope(&mut self) {
+        self.mem.pop();
+    }
+
+    fn insert_or_modify(&mut self, var_name: &str, value: Rc<Object>) {
+        // if any outer scopes contain variable with given name => change that binding
+        // otherwise insert value into current (deepest) scope
+        match self._find_containing_scope(var_name) {
+            Some((scope, _depth)) => {
+                scope.insert(var_name.to_owned(), value);
+            }
+            None => {
+                let current_scope = self.mem.last_mut().unwrap();
+                current_scope.insert(var_name.to_owned(), value);
+            }
+        }
+    }
+
+    fn _find_containing_scope(&mut self, var_name: &str) -> Option<(&mut Scope, usize)> {
+        let mut scope_depth = self.mem.len();
+        for scope in self.mem.iter_mut().rev() {
+            scope_depth -= 1;
+            if let Some(_) = scope.get_mut(var_name) {
+                return Some((scope, scope_depth));
+            }
+        }
+        None
+    }
+
+    fn lookup(&self, var_name: &str) -> Option<Rc<Object>> {
+        // iterate from deepest scope up to the global one
+        // and return first variable match or None
+        for scope in self.mem.iter().rev() {
+            if let Some(value) = scope.get(var_name) {
+                return Some(Rc::clone(value));
+            }
+        }
+        None
+    }
+}
+
+fn repl() {
+    let mut mem = Mem::new();
     println!("\n💩 v0.1\n");
 
     loop {
@@ -250,15 +328,15 @@ fn repl(mem: &mut Mem) {
         }
 
         // try line program into ast and then interpret
-        match hiki_parser::program(&line) {
-            Err(err) => print_parse_error(&err),
+        match snake_parser::program(&line) {
+            Err(err) => print_parse_error(&err, &line),
 
             // interpret ast
             Ok(mut expr_list) => {
                 // interpret 1st line
                 let expr = expr_list.remove(0);
 
-                match interpret(expr, mem) {
+                match interpret(expr, &mut mem) {
                     Err(err) => println!("Error: {}", &err),
                     Ok(result) => {
                         if let Some(result) = result {
@@ -271,18 +349,41 @@ fn repl(mem: &mut Mem) {
     }
 }
 
+use regex::Regex;
+
+fn remove_comments_and_empty_lines(src: &str) -> String {
+    // remove comments
+    let re = Regex::new(r"(?m)//.*").unwrap();
+    let src = re.replace_all(src, "").to_string();
+
+    // remove empty lines
+    let re = Regex::new(r"(?m)^\s*(?:\r?\n|\r)+").unwrap();
+    let src = re.replace_all(&src, "").to_string();
+
+    src.trim().to_owned()
+}
+
 #[test]
 fn test_parser() {
     let src = "
-        a = 1
+        a = 1  
+        {
+            c = 1
+        }
         b = 1
         c = a + b
         d = 1 + 1 + 1 + c
+        d = {
+            1
+            2
+        }
+        print(d)
         d = a - b
         d = a * b
         d = a / b
         d = a ^ b
         d = -1
+
         print(a + a)
         print('hello world')
         s = 'hello'
@@ -290,10 +391,13 @@ fn test_parser() {
         (2 + 3) + 3
     ";
 
+    let src = remove_comments_and_empty_lines(src);
+    dbg!(&src);
+
     // try parse program into ast
-    match hiki_parser::program(src) {
+    match snake_parser::program(&src) {
         Err(err) => {
-            print_parse_error(&err);
+            print_parse_error(&err, &src);
             panic!();
         }
 
@@ -309,7 +413,40 @@ fn test_parser() {
     }
 }
 
+fn execute_file(src_name: String) -> Result<(), AnyError> {
+    let src = fs::read_to_string(src_name)?;
+    let src = remove_comments_and_empty_lines(&src);
+
+    // try parse program into ast
+    match snake_parser::program(&src) {
+        Err(err) => {
+            print_parse_error(&err, &src);
+        }
+
+        // interpret each expr in ast
+        Ok(ast) => {
+            let mut memory = Mem::new();
+            for statement in ast {
+                interpret(statement, &mut memory).unwrap();
+            }
+        }
+    }
+
+    Ok(())
+}
+
+use std::env;
+
 fn main() {
-    let mut memory = Mem::new();
-    repl(&mut memory);
+    let mut args = env::args();
+    if args.len() > 1 {
+        let src = args.nth(1).unwrap();
+        if let Err(e) = execute_file(src) {
+            println!("\nError: {}", e);
+            std::process::exit(1);
+        }
+    }
+    else{
+        repl();
+    }
 }
