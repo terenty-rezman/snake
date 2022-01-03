@@ -1,6 +1,8 @@
 use ::lazy_static::lazy_static;
+use peg::error::ExpectedSet;
 use ::std::collections::HashMap;
 use std::rc::Rc;
+use std::ops::Neg;
 
 use std::{
     io::{stdout, Write},
@@ -16,6 +18,11 @@ pub enum Expression {
     String(String),
     Assignment(String, Box<Expression>),
     Add(Box<Expression>, Box<Expression>),
+    Sub(Box<Expression>, Box<Expression>),
+    Mul(Box<Expression>, Box<Expression>),
+    Div(Box<Expression>, Box<Expression>),
+    Pow(Box<Expression>, Box<Expression>),
+    Neg(Box<Expression>),
     FnCall(String, Box<Expression>),
 }
 
@@ -48,8 +55,6 @@ peg::parser!( grammar hiki_parser() for str {
     rule _ = " "*
     rule br() = "\n"*
 
-    rule plus() = "+"
-
     pub rule ident() -> &'input str
         = s: $(['a'..='z' | 'A'..='Z']['_' | 'a'..='z' | 'A'..='Z' | '0'..='9']*) {
             s
@@ -59,11 +64,18 @@ peg::parser!( grammar hiki_parser() for str {
         = n: $(['0'..='9']+) { n.parse().unwrap() }
 
     pub rule expression() -> Expression = precedence! {
-        // a + b
-        x:(@) plus() y:@ {
-            Expression::Add(x.into(), y.into())
-        }
-
+        // x + y
+        x:(@) "+" y:@ { Expression::Add(x.into(), y.into()) }
+        // x - y
+        x:(@) "-" y:@ { Expression::Sub(x.into(), y.into()) }
+        --
+        // x * y
+        x:(@) "*" y:@ { Expression::Mul(x.into(), y.into()) }
+        // y / y
+        x:(@) "/" y:@ { Expression::Div(x.into(), y.into()) }
+          --
+        x:@ "^" y:(@) { Expression::Pow(x.into(), y.into()) }
+        "-" x:@ { Expression::Neg(x.into()) }
         --
         // fn call
         _ f:ident() "(" e:expression() ** "," ")" _ {
@@ -108,7 +120,31 @@ use EvalError::*;
 enum Object {
     Str(String),
     Number(i64),
-    Array(Vec<Rc<Object>>)
+    Array(Vec<Rc<Object>>),
+}
+
+fn eval_args_and_do_ariphmetic(
+    x: Expression,
+    y: Expression,
+    op: fn(i64, i64) -> i64,
+    mem: &mut Mem,
+) -> EvalResult {
+    let x = interpret(x, mem)?.ok_or(ValueError("value expected".to_owned()))?;
+    let y = interpret(y, mem)?.ok_or(ValueError("value expected".to_owned()))?;
+
+    let x = match *x {
+        Object::Number(n) => n,
+        _ => Err(ValueError("integer expected".to_owned()))?,
+    };
+
+    let y = match *y {
+        Object::Number(n) => n,
+        _ => Err(ValueError("integer expected".to_owned()))?,
+    };
+
+    let result = op(x, y);
+
+    Ok(Some(Object::Number(result).into()))
 }
 
 fn interpret(exp: Expression, mem: &mut Mem) -> EvalResult {
@@ -127,13 +163,12 @@ fn interpret(exp: Expression, mem: &mut Mem) -> EvalResult {
         Expression::FnArgList(v) => {
             let mut results = Vec::new();
             for e in v {
-                let r = interpret(e, mem)?
-                    .ok_or(ValueError("value expected".to_owned()))?;
+                let r = interpret(e, mem)?.ok_or(ValueError("value expected".to_owned()))?;
                 results.push(r);
             }
 
             Ok(Some(Object::Array(results).into()))
-        },
+        }
 
         Expression::Assignment(var_name, expr) => {
             let value = interpret(*expr, mem)?;
@@ -147,38 +182,39 @@ fn interpret(exp: Expression, mem: &mut Mem) -> EvalResult {
         }
 
         Expression::Add(expr_1, expr_2) => {
-            let value_1 = interpret(*expr_1, mem)?
-                .ok_or(ValueError("value expected".to_owned()))?;
-            let value_2 = interpret(*expr_2, mem)?
-                .ok_or(ValueError("value expected".to_owned()))?;
+            eval_args_and_do_ariphmetic(*expr_1, *expr_2, std::ops::Add::add, mem)
+        }
 
-            let value_1 = match *value_1 {
-                Object::Number(n) => n,
-                _ => Err(ValueError("integer expected".to_owned()))?
-            };
+        Expression::Sub(expr_1, expr_2) => {
+            eval_args_and_do_ariphmetic(*expr_1, *expr_2, std::ops::Sub::sub, mem)
+        }
 
-            let value_2 = match *value_2 {
-                Object::Number(n) => n,
-                _ => Err(ValueError("integer expected".to_owned()))?
-            };
+        Expression::Mul(expr_1, expr_2) => {
+            eval_args_and_do_ariphmetic(*expr_1, *expr_2, std::ops::Mul::mul, mem)
+        }
 
-            Ok(Some(
-                Object::Number(value_1 + value_2).into()
-            ))
+        Expression::Div(expr_1, expr_2) => {
+            eval_args_and_do_ariphmetic(*expr_1, *expr_2, std::ops::Div::div, mem)
+        }
+
+        Expression::Pow(expr_1, expr_2) => {
+            eval_args_and_do_ariphmetic(*expr_1, *expr_2, |x, y| x.pow(y as u32), mem)
+        }
+
+        Expression::Neg(expr_1) => {
+            eval_args_and_do_ariphmetic(*expr_1, Expression::Number(0), |x, _| x.neg(), mem)
         }
 
         Expression::FnCall(fn_name, expr) => {
-            let value =
-                interpret(*expr, mem)?.ok_or(ValueError("arg list expected".to_owned()))?;
+            let value = interpret(*expr, mem)?.ok_or(ValueError("arg list expected".to_owned()))?;
 
-            let builtin = BUILTINS.get(&fn_name).ok_or(ValueError(format!(
-                "no such builtin found: '{}'",
-                fn_name
-            )))?;
+            let builtin = BUILTINS
+                .get(&fn_name)
+                .ok_or(ValueError(format!("no such builtin found: '{}'", fn_name)))?;
 
             let vec = match &*value {
                 Object::Array(v) => v,
-                _ => Err(ValueError("integer expected".to_owned()))?
+                _ => Err(ValueError("integer expected".to_owned()))?,
             };
 
             builtin(mem, &vec);
@@ -242,6 +278,11 @@ fn test_parser() {
         b = 1
         c = a + b
         d = 1 + 1 + 1 + c
+        d = a - b
+        d = a * b
+        d = a / b
+        d = a ^ b
+        d = -1
         print(a + a)
         print('hello world')
         s = 'hello'
