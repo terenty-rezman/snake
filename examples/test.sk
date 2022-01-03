@@ -15,4 +15,15 @@ a = {
     c
 }
 
+a = {
+    if(0) {
+        print("true")
+        "true"
+    }
+    else {
+        print("false")
+        "false"
+    }
+}
+
 mem()

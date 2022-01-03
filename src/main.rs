@@ -1,11 +1,11 @@
 use ::lazy_static::lazy_static;
 use ::std::collections::HashMap;
-use std::f32::consts::E;
-use std::os::windows::process;
 use peg::error::ExpectedSet;
+use std::f32::consts::E;
 use std::fmt::Debug;
 use std::ops::Neg;
 use std::os::windows::prelude::OsStringExt;
+use std::os::windows::process;
 use std::rc::Rc;
 
 use std::{
@@ -18,6 +18,8 @@ pub enum Expression {
     Void,
     FnArgList(Vec<Expression>),
     CodeBlock(Vec<Expression>),
+    IfElseBlock(Box<Expression>, Box<Expression>, Box<Expression>),
+    ConditionEq(Box<Expression>),
     Ident(String),
     Number(i64),
     String(String),
@@ -61,9 +63,7 @@ peg::parser!( grammar snake_parser() for str {
     rule br() = ['\r' | '\n'] ['\n']?
 
     pub rule ident() -> &'input str
-        = s: $(['a'..='z' | 'A'..='Z']['_' | 'a'..='z' | 'A'..='Z' | '0'..='9']*) {
-            s
-        }
+        = s: $(['a'..='z' | 'A'..='Z']['_' | 'a'..='z' | 'A'..='Z' | '0'..='9']*) { s }
 
     rule number() -> i64
         = n: $(['0'..='9']+) { n.parse().unwrap() }
@@ -95,8 +95,6 @@ peg::parser!( grammar snake_parser() for str {
 
         _ "(" e:expression() ")" _ { e }
 
-        _ "{" _ br()* e:(assignment() / expression()) ** br() br()* _ "}" _ { Expression::CodeBlock(e) }
-
         // string
         _ "'" t:$([^'\'']+) "'" _ { Expression::String(t.to_owned()) }
 
@@ -104,10 +102,18 @@ peg::parser!( grammar snake_parser() for str {
         _ "\"" t:$([^'"']+) "\"" _ { Expression::String(t.to_owned()) }
     }
 
-    rule assignment() -> Expression = _ i:ident() _ "=" _ n:expression() { Expression::Assignment(i.to_string(), n.into()) }
+    rule if_else() -> Expression = _ "if(" e:expression() ")" _ br()* t:code_block() br()* f:else_block()? {
+        Expression::IfElseBlock(e.into(), t.into(), f.unwrap_or(Expression::CodeBlock(Vec::new()).into()).into())
+    }
+
+    rule else_block() -> Expression = _ "else" _ br()* e:code_block() { e }
+
+    rule code_block() -> Expression = _ "{" _ br()* e:(assignment() / code_block() / if_else() / expression()) ** br() br()* _ "}" _ { Expression::CodeBlock(e) }
+
+    rule assignment() -> Expression = _ i:ident() _ "=" _ n:(code_block() / expression()) { Expression::Assignment(i.to_string(), n.into()) }
 
     pub rule program() -> Vec<Expression>
-        = s:(assignment() / expression()) ** br() { s }
+        = s:(assignment() / code_block() / if_else() / expression()) ** br() { s }
 });
 
 type AnyError = Box<dyn std::error::Error>;
@@ -128,6 +134,16 @@ enum Object {
     Str(String),
     Number(i64),
     Array(Vec<Rc<Object>>),
+}
+
+impl Object {
+    fn eval_to_bool(&self) -> bool {
+        match self {
+            Object::Str(s) => !s.is_empty(),
+            Object::Number(n) => *n != 0,
+            Object::Array(v) => v.len() != 0,
+        }
+    }
 }
 
 fn eval_args_and_do_ariphmetic(
@@ -198,6 +214,18 @@ fn interpret(exp: Expression, mem: &mut Mem) -> EvalResult {
             Ok(val)
         }
 
+        Expression::IfElseBlock(cond, true_block, else_block) => {
+            let cond = interpret(*cond, mem)?.ok_or(ValueError("value expected".to_owned()))?;
+
+            let is_true = cond.eval_to_bool();
+            let result = if is_true {
+                interpret(*true_block, mem)
+            } else {
+                interpret(*else_block, mem)
+            };
+            result
+        }
+
         Expression::Add(expr_1, expr_2) => {
             eval_args_and_do_ariphmetic(*expr_1, *expr_2, std::ops::Add::add, mem)
         }
@@ -245,8 +273,13 @@ fn interpret(exp: Expression, mem: &mut Mem) -> EvalResult {
 fn print_parse_error(err: &peg::error::ParseError<peg::str::LineCol>, src: &str) {
     let failed_char = src.chars().nth(err.location.offset).unwrap();
     println!(
-        "parse error: [line: {}, column: {}, offset: {}] expected: {} got: '{}'",
-        err.location.line, err.location.column, err.location.offset, err.expected, failed_char
+        "Parse error:\n{} <-- expected {}\nfound: '{}'\n[line: {}, column: {}, offset: {}]",
+        &src[0..=err.location.offset],
+        err.expected,
+        failed_char,
+        err.location.line,
+        err.location.column,
+        err.location.offset
     );
 }
 
@@ -427,7 +460,10 @@ fn execute_file(src_name: String) -> Result<(), AnyError> {
         Ok(ast) => {
             let mut memory = Mem::new();
             for statement in ast {
-                interpret(statement, &mut memory).unwrap();
+                if let Err(e) = interpret(statement, &mut memory) {
+                    println!("Error: {}", &e);
+                    std::process::exit(1);
+                }
             }
         }
     }
@@ -445,8 +481,7 @@ fn main() {
             println!("\nError: {}", e);
             std::process::exit(1);
         }
-    }
-    else{
+    } else {
         repl();
     }
 }
