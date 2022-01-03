@@ -28,15 +28,15 @@ pub enum Expression {
 
 type DynamicFcn = fn(&mut Mem, &Vec<Rc<Object>>) -> ();
 
-fn bln_print(mem: &mut Mem, args: &Vec<Rc<Object>>) -> () {
+fn bln_print(_mem: &mut Mem, args: &Vec<Rc<Object>>) -> () {
     println!("{:?}", args);
 }
 
-fn bln_mem(mem: &mut Mem, args: &Vec<Rc<Object>>) -> () {
+fn bln_mem(mem: &mut Mem, _args: &Vec<Rc<Object>>) -> () {
     println!("{:?}", mem);
 }
 
-fn bln_exit(mem: &mut Mem, args: &Vec<Rc<Object>>) -> () {
+fn bln_exit(_mem: &mut Mem, _args: &Vec<Rc<Object>>) -> () {
     println!("sayōnara");
     std::process::exit(0);
 }
@@ -151,12 +151,12 @@ fn interpret(exp: Expression, mem: &mut Mem) -> EvalResult {
     match exp {
         Expression::Void => Ok(None),
 
-        Expression::Number(i) => Ok(Some(Object::Number(i).into())),
+        Expression::Number(i) => Ok(Some(Rc::new(Object::Number(i)))),
 
-        Expression::String(s) => Ok(Some(Object::Str(s).into())),
+        Expression::String(s) => Ok(Some(Rc::new(Object::Str(s)))),
 
         Expression::Ident(id) => match mem.get(&id) {
-            Some(value) => Ok(Some(value.clone())),
+            Some(value) => Ok(Some(Rc::clone(value))),
             None => Err(ValueError(format!("'{}' variable not found", id)).into()),
         },
 
