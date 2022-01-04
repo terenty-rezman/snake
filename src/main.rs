@@ -19,6 +19,7 @@ pub enum Expression {
     FnArgList(Vec<Expression>),
     CodeBlock(Vec<Expression>),
     IfElseBlock(Box<Expression>, Box<Expression>, Box<Expression>),
+    WhileBlock(Box<Expression>, Box<Expression>),
     ConditionEq(Box<Expression>),
     Ident(String),
     Number(i64),
@@ -59,7 +60,7 @@ lazy_static! {
 }
 
 peg::parser!( grammar snake_parser() for str {
-    // whitespace rules taken from https://gist.github.com/zicklag/aad1944ef7f5dd256218892477f32c64 
+    // whitespace rules taken from https://gist.github.com/zicklag/aad1944ef7f5dd256218892477f32c64
     // Whitespace character
     rule whitespace_char() = ['\t' | ' ']
 
@@ -112,17 +113,19 @@ peg::parser!( grammar snake_parser() for str {
         _ "\"" t:$([^'"']+) "\"" _ { Expression::String(t.to_owned()) }
     }
 
-    rule if_else() -> Expression = _ "if(" e:expression() ")" _ wn() t:code_block() wn() f:else_block()? {
-        Expression::IfElseBlock(e.into(), t.into(), f.unwrap_or(Expression::CodeBlock(Vec::new()).into()).into())
+    rule if_else() -> Expression = _ "if(" c:expression() ")" wn() t:code_block() wn() f:else_block()? {
+        Expression::IfElseBlock(c.into(), t.into(), f.unwrap_or(Expression::CodeBlock(Vec::new()).into()).into())
     }
 
     rule else_block() -> Expression = _ "else" _ wn() e:code_block() { e }
+
+    rule while_block() -> Expression = _ "while(" c:expression() ")" wn() b:code_block() { Expression::WhileBlock(c.into(), b.into()) }
 
     rule code_block() -> Expression = _ "{" _ wn() e:anything() ** wn() wn() _ "}" _ { Expression::CodeBlock(e) }
 
     rule assignment() -> Expression = _ i:ident() _ "=" _ n:(code_block() / expression()) { Expression::Assignment(i.to_string(), n.into()) }
 
-    rule anything() -> Expression = assignment() / code_block() / if_else() / expression()
+    rule anything() -> Expression = assignment() / code_block() / if_else() / while_block() / expression()
 
     pub rule program() -> Vec<Expression>
         = wn() s:anything() ** wn() wn() { s }
@@ -235,6 +238,17 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
             } else {
                 interpret(else_block, mem)
             };
+            result
+        }
+
+        Expression::WhileBlock(cond, body) => {
+            let mut result = Ok(None);
+            while {
+                let cond = interpret(cond, mem)?.ok_or(ValueError("value expected".to_owned()))?;
+                cond.eval_to_bool()
+            } {
+                result = interpret(body, mem)
+            }
             result
         }
 
@@ -405,6 +419,11 @@ fn normalize_newlines(src: &str) -> String {
 #[test]
 fn test_parser() {
     let src = "
+        a = 10
+        while(a) {
+            print(a)
+            a = a - 1
+        }
         a = 1
         b = 1
         c = {
