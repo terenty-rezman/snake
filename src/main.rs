@@ -13,9 +13,10 @@ use std::{
     result,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Expression {
     Void,
+    FnDef(String, Vec<String>, Box<Expression>),
     FnArgList(Vec<Expression>),
     CodeBlock(Vec<Expression>),
     IfElseBlock(Box<Expression>, Box<Expression>, Box<Expression>),
@@ -74,7 +75,7 @@ peg::parser!( grammar snake_parser() for str {
     rule wn() = quiet!{ (whitespace_char() / "\n" / line_comment())* }
 
     pub rule ident() -> &'input str
-        = s: $(['a'..='z' | 'A'..='Z']['_' | 'a'..='z' | 'A'..='Z' | '0'..='9']*) { s }
+        = _ s: $(['a'..='z' | 'A'..='Z']['_' | 'a'..='z' | 'A'..='Z' | '0'..='9']*) { s }
 
     rule number() -> i64
         = n: $(['0'..='9']+) { n.parse().unwrap() }
@@ -94,8 +95,8 @@ peg::parser!( grammar snake_parser() for str {
         "-" x:@ { Expression::Neg(x.into()) }
         --
         // fn call
-        _ f:ident() "(" e:expression() ** "," ")" _ {
-            Expression::FnCall(f.to_owned(), Expression::FnArgList(e).into())
+        _ f:ident() "(" l:expression() ** "," ")" _ {
+            Expression::FnCall(f.to_owned(), Expression::FnArgList(l).into())
         }
 
         // identificator
@@ -125,10 +126,14 @@ peg::parser!( grammar snake_parser() for str {
 
     rule assignment() -> Expression = _ i:ident() _ "=" _ n:(code_block() / expression()) { Expression::Assignment(i.to_string(), n.into()) }
 
+    rule fn_def() -> Expression = _ "fn" _ i:ident() "(" l:ident() ** "," ")" wn() b:code_block() { 
+        Expression::FnDef(i.to_string(), l.into_iter().map(|s| s.to_string()).collect(), b.into()) 
+    }
+
     rule anything() -> Expression = assignment() / code_block() / if_else() / while_block() / expression()
 
     pub rule program() -> Vec<Expression>
-        = wn() s:anything() ** wn() wn() { s }
+        = wn() s:(fn_def() / anything()) ** wn() wn() { s }
 });
 
 type AnyError = Box<dyn std::error::Error>;
@@ -149,14 +154,16 @@ enum Object {
     Str(String),
     Number(i64),
     Array(Vec<Rc<Object>>),
+    Function(Vec<String>, Expression)
 }
 
 impl Object {
-    fn eval_to_bool(&self) -> bool {
+    fn eval_to_bool(&self) -> Result<bool, AnyError> {
         match self {
-            Object::Str(s) => !s.is_empty(),
-            Object::Number(n) => *n != 0,
-            Object::Array(v) => v.len() != 0,
+            Object::Str(s) => Ok(!s.is_empty()),
+            Object::Number(n) => Ok(*n != 0),
+            Object::Array(v) => Ok(v.len() != 0),
+            _ => Err(ValueError(format!("{:?} can not eval to bool", self)).into())
         }
     }
 }
@@ -185,6 +192,27 @@ fn eval_args_and_do_ariphmetic(
     Ok(Some(Object::Number(result).into()))
 }
 
+
+fn try_call_fn(fcn: &Object, arg_values: &Vec<Rc<Object>>, mem: &mut Mem) -> EvalResult {
+    match fcn {
+       Object::Function(arg_names, body) => {
+           if arg_names.len() < arg_values.len() {
+               return Err(ValueError("not enough arg in fcn call".to_string()))?;
+           }
+
+           mem.push_scope();
+           for (name, value) in arg_names.iter().zip(arg_values.iter()) {
+               mem.insert_or_modify(name, Rc::clone(value));
+           }
+
+           let result = interpret(&body, mem);
+           mem.pop_scope();
+           return result;
+       } 
+       _ => Err(ValueError("callable is not callable".to_string()))?
+    }
+}
+
 fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
     match exp {
         Expression::Void => Ok(None),
@@ -198,6 +226,13 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
             None => Err(ValueError(format!("'{}' variable not found", id)).into()),
         },
 
+        Expression::FnDef(name, arg_names, body) => {
+            // TODO: clone here is probably can be avoided
+            let fn_obj = Object::Function(arg_names.clone(), *body.clone());
+            mem.insert_or_modify(name, Rc::new(fn_obj));
+            Ok(None)
+        }
+
         Expression::FnArgList(v) => {
             let mut results = Vec::new();
             for e in v {
@@ -205,7 +240,7 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
                 results.push(r);
             }
 
-            Ok(Some(Object::Array(results).into()))
+            Ok(Some(Rc::new(Object::Array(results))))
         }
 
         Expression::Assignment(var_name, expr) => {
@@ -232,7 +267,7 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
         Expression::IfElseBlock(cond, true_block, else_block) => {
             let cond = interpret(cond, mem)?.ok_or(ValueError("value expected".to_owned()))?;
 
-            let is_true = cond.eval_to_bool();
+            let is_true = cond.eval_to_bool()?;
             let result = if is_true {
                 interpret(true_block, mem)
             } else {
@@ -245,7 +280,7 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
             let mut result = Ok(None);
             while {
                 let cond = interpret(cond, mem)?.ok_or(ValueError("value expected".to_owned()))?;
-                cond.eval_to_bool()
+                cond.eval_to_bool()?
             } {
                 result = interpret(body, mem)
             }
@@ -279,17 +314,24 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
         Expression::FnCall(fn_name, expr) => {
             let value = interpret(expr, mem)?.ok_or(ValueError("arg list expected".to_owned()))?;
 
-            let builtin = BUILTINS
-                .get(fn_name)
-                .ok_or(ValueError(format!("no such builtin found: '{}'", fn_name)))?;
-
-            let vec = match &*value {
+            let args = match &*value {
                 Object::Array(v) => v,
-                _ => Err(ValueError("integer expected".to_owned()))?,
+                _ => Err(ValueError("arg list is expected".to_owned()))?,
             };
 
-            builtin(mem, &vec);
-            Ok(None)
+            match mem.lookup(fn_name) {
+                Some(fcn) => try_call_fn(fcn.as_ref(), args, mem),
+                None => {
+                    // try to match builtins
+                    let builtin = BUILTINS
+                        .get(fn_name)
+                        .ok_or(ValueError(format!("no such builtin found: '{}'", fn_name)))?;
+
+                    builtin(mem, &args);
+                    Ok(None)
+                } 
+            }
+
         }
 
         _ => unimplemented!(),
@@ -325,6 +367,7 @@ impl Mem {
         }
     }
 
+    // TODO: this should probably by replaced by RAII
     fn push_scope(&mut self) {
         self.mem.push(Scope::new());
     }
@@ -420,10 +463,19 @@ fn normalize_newlines(src: &str) -> String {
 fn test_parser() {
     let src = "
         a = 10
+        b = 1
+
         while(a) {
             print(a)
             a = a - 1
         }
+
+        fn sum(a, b) {
+            a + b
+        }
+
+        print('a + b', sum(a, b))
+
         a = 1
         b = 1
         c = {

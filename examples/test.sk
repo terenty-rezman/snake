@@ -36,4 +36,22 @@ while(a) {
     print(a)
 }
 
+fn my_print(a) {
+    print(a)
+}
+
+my_print("my print")
+
+fn sum(a, b) {
+    {
+        c = 1
+        a + b
+    }
+}
+
+a = 1 
+b = 1 
+
+print('a + b', sum(a, b))
+
 mem()
