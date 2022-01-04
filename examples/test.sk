@@ -1,7 +1,11 @@
-a = 1
+a = 1 // comment
+
 {
     a = 2
 }
+//
+
+// comment
 
 a = {
     print(a)

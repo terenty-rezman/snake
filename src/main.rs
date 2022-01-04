@@ -59,8 +59,18 @@ lazy_static! {
 }
 
 peg::parser!( grammar snake_parser() for str {
-    rule _ = [' ' | '\t']*
-    rule br() = ['\r' | '\n'] ['\n']?
+    // whitespace rules taken from https://gist.github.com/zicklag/aad1944ef7f5dd256218892477f32c64 
+    // Whitespace character
+    rule whitespace_char() = ['\t' | ' ']
+
+    // Line comment
+    rule line_comment() = "//" (!"\n" [_])* ("\n" / ![_])
+
+    // Whitespace including comments
+    rule _ = quiet!{ (whitespace_char() / line_comment())* }
+
+    // Whitespace including newlines and line comments
+    rule wn() = quiet!{ (whitespace_char() / "\n" / line_comment())* }
 
     pub rule ident() -> &'input str
         = s: $(['a'..='z' | 'A'..='Z']['_' | 'a'..='z' | 'A'..='Z' | '0'..='9']*) { s }
@@ -102,18 +112,20 @@ peg::parser!( grammar snake_parser() for str {
         _ "\"" t:$([^'"']+) "\"" _ { Expression::String(t.to_owned()) }
     }
 
-    rule if_else() -> Expression = _ "if(" e:expression() ")" _ br()* t:code_block() br()* f:else_block()? {
+    rule if_else() -> Expression = _ "if(" e:expression() ")" _ wn() t:code_block() wn() f:else_block()? {
         Expression::IfElseBlock(e.into(), t.into(), f.unwrap_or(Expression::CodeBlock(Vec::new()).into()).into())
     }
 
-    rule else_block() -> Expression = _ "else" _ br()* e:code_block() { e }
+    rule else_block() -> Expression = _ "else" _ wn() e:code_block() { e }
 
-    rule code_block() -> Expression = _ "{" _ br()* e:(assignment() / code_block() / if_else() / expression()) ** br() br()* _ "}" _ { Expression::CodeBlock(e) }
+    rule code_block() -> Expression = _ "{" _ wn() e:anything() ** wn() wn() _ "}" _ { Expression::CodeBlock(e) }
 
     rule assignment() -> Expression = _ i:ident() _ "=" _ n:(code_block() / expression()) { Expression::Assignment(i.to_string(), n.into()) }
 
+    rule anything() -> Expression = assignment() / code_block() / if_else() / expression()
+
     pub rule program() -> Vec<Expression>
-        = s:(assignment() / code_block() / if_else() / expression()) ** br() { s }
+        = wn() s:anything() ** wn() wn() { s }
 });
 
 type AnyError = Box<dyn std::error::Error>;
@@ -384,48 +396,39 @@ fn repl() {
 
 use regex::Regex;
 
-fn remove_comments_and_empty_lines(src: &str) -> String {
-    // remove comments
-    let re = Regex::new(r"(?m)//.*").unwrap();
-    let src = re.replace_all(src, "").to_string();
-
-    // remove empty lines
-    let re = Regex::new(r"(?m)^\s*(?:\r?\n|\r)+").unwrap();
-    let src = re.replace_all(&src, "").to_string();
-
-    src.trim().to_owned()
+fn normalize_newlines(src: &str) -> String {
+    // normalize newlines to '\n'
+    let re = Regex::new(r"(?:\r\n|\r)").unwrap();
+    re.replace_all(&src, "\n").to_string()
 }
 
 #[test]
 fn test_parser() {
     let src = "
-        a = 1  
-        {
-            c = 1
-        }
+        a = 1
         b = 1
-        c = a + b
-        d = 1 + 1 + 1 + c
-        d = {
-            1
-            2
+        c = {
+            if(a) {
+                a
+            }
+            else {
+                b
+            }
         }
-        print(d)
-        d = a - b
-        d = a * b
-        d = a / b
-        d = a ^ b
-        d = -1
-
-        print(a + a)
-        print('hello world')
-        s = 'hello'
-        print(s)
-        (2 + 3) + 3
+        print(a, b)
+        mem()
+        a / b
+        a * b
+        a - b
+        a + b // comment
+        {
+            d = a
+            d
+        }
     ";
 
-    let src = remove_comments_and_empty_lines(src);
-    dbg!(&src);
+    let src = normalize_newlines(src);
+    // dbg!(&src);
 
     // try parse program into ast
     match snake_parser::program(&src) {
@@ -448,7 +451,7 @@ fn test_parser() {
 
 fn execute_file(src_name: String) -> Result<(), AnyError> {
     let src = fs::read_to_string(src_name)?;
-    let src = remove_comments_and_empty_lines(&src);
+    let src = normalize_newlines(&src);
 
     // try parse program into ast
     match snake_parser::program(&src) {
