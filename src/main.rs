@@ -38,7 +38,13 @@ pub enum Expression {
 type DynamicFcn = fn(&mut Mem, &Vec<Rc<Object>>) -> ();
 
 fn bln_print(_mem: &mut Mem, args: &Vec<Rc<Object>>) -> () {
-    println!("{:?}", args);
+    for (i, o) in args.iter().enumerate() {
+        if i > 0 {
+            print!(" ");
+        }
+        print!("{}", &o);
+    }
+    print!("\n");
 }
 
 fn bln_mem(mem: &mut Mem, _args: &Vec<Rc<Object>>) -> () {
@@ -164,6 +170,16 @@ impl Object {
             Object::Number(n) => Ok(*n != 0),
             Object::Array(v) => Ok(v.len() != 0),
             _ => Err(ValueError(format!("{:?} can not eval to bool", self)).into())
+        }
+    }
+}
+
+impl std::fmt::Display for Object {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+           Object::Str(s) => write!(f, "{}", s),
+           Object::Number(n) => write!(f, "{}", n),
+           _ => write!(f, "{:?}", self)
         }
     }
 }
@@ -442,7 +458,7 @@ fn repl() {
                     Err(err) => println!("Error: {}", &err),
                     Ok(result) => {
                         if let Some(result) = result {
-                            println!("{:?}", result);
+                            println!("{}", result);
                         }
                     }
                 }
