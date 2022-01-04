@@ -159,8 +159,8 @@ impl Object {
 }
 
 fn eval_args_and_do_ariphmetic(
-    x: Expression,
-    y: Expression,
+    x: &Expression,
+    y: &Expression,
     op: fn(i64, i64) -> i64,
     mem: &mut Mem,
 ) -> EvalResult {
@@ -182,13 +182,13 @@ fn eval_args_and_do_ariphmetic(
     Ok(Some(Object::Number(result).into()))
 }
 
-fn interpret(exp: Expression, mem: &mut Mem) -> EvalResult {
+fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
     match exp {
         Expression::Void => Ok(None),
 
-        Expression::Number(i) => Ok(Some(Rc::new(Object::Number(i)))),
+        Expression::Number(i) => Ok(Some(Rc::new(Object::Number(*i)))),
 
-        Expression::String(s) => Ok(Some(Rc::new(Object::Str(s)))),
+        Expression::String(s) => Ok(Some(Rc::new(Object::Str(s.clone())))),
 
         Expression::Ident(id) => match mem.lookup(&id) {
             Some(value) => Ok(Some(value)),
@@ -206,7 +206,7 @@ fn interpret(exp: Expression, mem: &mut Mem) -> EvalResult {
         }
 
         Expression::Assignment(var_name, expr) => {
-            let value = interpret(*expr, mem)?;
+            let value = interpret(expr, mem)?;
             match value {
                 None => Err(ValueError("value expected".to_owned()).into()),
                 Some(value) => {
@@ -227,46 +227,46 @@ fn interpret(exp: Expression, mem: &mut Mem) -> EvalResult {
         }
 
         Expression::IfElseBlock(cond, true_block, else_block) => {
-            let cond = interpret(*cond, mem)?.ok_or(ValueError("value expected".to_owned()))?;
+            let cond = interpret(cond, mem)?.ok_or(ValueError("value expected".to_owned()))?;
 
             let is_true = cond.eval_to_bool();
             let result = if is_true {
-                interpret(*true_block, mem)
+                interpret(true_block, mem)
             } else {
-                interpret(*else_block, mem)
+                interpret(else_block, mem)
             };
             result
         }
 
         Expression::Add(expr_1, expr_2) => {
-            eval_args_and_do_ariphmetic(*expr_1, *expr_2, std::ops::Add::add, mem)
+            eval_args_and_do_ariphmetic(expr_1, expr_2, std::ops::Add::add, mem)
         }
 
         Expression::Sub(expr_1, expr_2) => {
-            eval_args_and_do_ariphmetic(*expr_1, *expr_2, std::ops::Sub::sub, mem)
+            eval_args_and_do_ariphmetic(expr_1, expr_2, std::ops::Sub::sub, mem)
         }
 
         Expression::Mul(expr_1, expr_2) => {
-            eval_args_and_do_ariphmetic(*expr_1, *expr_2, std::ops::Mul::mul, mem)
+            eval_args_and_do_ariphmetic(expr_1, expr_2, std::ops::Mul::mul, mem)
         }
 
         Expression::Div(expr_1, expr_2) => {
-            eval_args_and_do_ariphmetic(*expr_1, *expr_2, std::ops::Div::div, mem)
+            eval_args_and_do_ariphmetic(expr_1, expr_2, std::ops::Div::div, mem)
         }
 
         Expression::Pow(expr_1, expr_2) => {
-            eval_args_and_do_ariphmetic(*expr_1, *expr_2, |x, y| x.pow(y as u32), mem)
+            eval_args_and_do_ariphmetic(expr_1, expr_2, |x, y| x.pow(y as u32), mem)
         }
 
         Expression::Neg(expr_1) => {
-            eval_args_and_do_ariphmetic(*expr_1, Expression::Number(0), |x, _| x.neg(), mem)
+            eval_args_and_do_ariphmetic(expr_1, &Expression::Number(0), |x, _| x.neg(), mem)
         }
 
         Expression::FnCall(fn_name, expr) => {
-            let value = interpret(*expr, mem)?.ok_or(ValueError("arg list expected".to_owned()))?;
+            let value = interpret(expr, mem)?.ok_or(ValueError("arg list expected".to_owned()))?;
 
             let builtin = BUILTINS
-                .get(&fn_name)
+                .get(fn_name)
                 .ok_or(ValueError(format!("no such builtin found: '{}'", fn_name)))?;
 
             let vec = match &*value {
@@ -381,7 +381,7 @@ fn repl() {
                 // interpret 1st line
                 let expr = expr_list.remove(0);
 
-                match interpret(expr, &mut mem) {
+                match interpret(&expr, &mut mem) {
                     Err(err) => println!("Error: {}", &err),
                     Ok(result) => {
                         if let Some(result) = result {
@@ -441,7 +441,7 @@ fn test_parser() {
         Ok(ast) => {
             let mut memory = Mem::new();
 
-            for statement in ast {
+            for statement in &ast {
                 interpret(statement, &mut memory).unwrap();
             }
             dbg!(memory);
@@ -462,7 +462,7 @@ fn execute_file(src_name: String) -> Result<(), AnyError> {
         // interpret each expr in ast
         Ok(ast) => {
             let mut memory = Mem::new();
-            for statement in ast {
+            for statement in &ast {
                 if let Err(e) = interpret(statement, &mut memory) {
                     println!("Error: {}", &e);
                     std::process::exit(1);
