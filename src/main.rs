@@ -298,6 +298,16 @@ impl std::fmt::Display for Object {
         match self {
             Object::Str(s) => write!(f, "{}", s),
             Object::Number(n) => write!(f, "{}", n),
+            Object::Array(v) => {
+                write!(f, "[")?;
+                v.iter().enumerate().for_each(|(i, o)| {
+                    if i != 0 {
+                        write!(f, ",");
+                    }
+                    write!(f, "{}", o);
+                });
+                write!(f, "]")
+            }
             _ => write!(f, "{:?}", self),
         }
     }
@@ -772,6 +782,6 @@ fn main() {
                 println!("\nError: {}", e);
             }
         }
-        None => repl()
+        None => repl(),
     }
 }
