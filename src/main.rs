@@ -84,6 +84,37 @@ fn snk_len(_mem: &mut Mem, args: &Vec<Rc<Object>>) -> EvalResult {
     }
 }
 
+fn snk_array_push(_mem: &mut Mem, args: &Vec<Rc<Object>>) -> EvalResult {
+    if args.len() < 2 {
+        Err("push() expects 2 arguments")?
+    }
+
+    match args[0].as_ref() {
+        Object::Array(v) => {
+            let value = &args[1];
+            let mut new_vec = v.clone();
+            new_vec.push(Rc::clone(value));
+            Ok(Some(Rc::new(Object::Array(new_vec))))
+        }
+        _ => Err("push(array, value) expects array as an input")?,
+    }
+}
+
+fn snk_array_pop(_mem: &mut Mem, args: &Vec<Rc<Object>>) -> EvalResult {
+    if args.len() < 1 {
+        Err("pop() expects 1 argument")?
+    }
+
+    match args[0].as_ref() {
+        Object::Array(v) => {
+            let mut new_vec = v.clone();
+            new_vec.pop();
+            Ok(Some(Rc::new(Object::Array(new_vec))))
+        }
+        _ => Err("pop(array) expects array as an input")?,
+    }
+}
+
 lazy_static! {
     static ref BUILTINS: HashMap<String, BuiltinFcn> = {
         let mut m = HashMap::new();
@@ -91,6 +122,8 @@ lazy_static! {
         m.insert("mem".to_owned(), snk_mem as BuiltinFcn);
         m.insert("exit".to_owned(), snk_exit as BuiltinFcn);
         m.insert("len".to_owned(), snk_len as BuiltinFcn);
+        m.insert("push".to_owned(), snk_array_push as BuiltinFcn);
+        m.insert("pop".to_owned(), snk_array_pop as BuiltinFcn);
         m
     };
 }
@@ -298,7 +331,7 @@ fn try_call_fn(fcn: &Object, arg_values: &Vec<Rc<Object>>, mem: &mut Mem) -> Eva
     match fcn {
         Object::Function(arg_names, body) => {
             if arg_values.len() < arg_names.len() {
-                return Err(ValueError(format!(
+                Err(ValueError(format!(
                     "function expects {} args",
                     arg_names.len()
                 )))?;
@@ -311,7 +344,7 @@ fn try_call_fn(fcn: &Object, arg_values: &Vec<Rc<Object>>, mem: &mut Mem) -> Eva
 
             let result = interpret(&body.0, mem);
             mem.pop_scope();
-            return result;
+            result
         }
         _ => Err(ValueError("callable is not callable".to_string()))?,
     }
@@ -722,17 +755,23 @@ fn execute_file(src_name: String) -> Result<(), AnyError> {
     Ok(())
 }
 
-use std::env;
-
-fn main() {
+fn get_filename_from_args() -> Option<String> {
+    use std::env;
     let mut args = env::args();
     if args.len() > 1 {
         let src = args.nth(1).unwrap();
-        if let Err(e) = execute_file(src) {
-            println!("\nError: {}", e);
-            std::process::exit(1);
+        return Some(src);
+    }
+    None
+}
+
+fn main() {
+    match get_filename_from_args() {
+        Some(file_name) => {
+            if let Err(e) = execute_file(file_name) {
+                println!("\nError: {}", e);
+            }
         }
-    } else {
-        repl();
+        None => repl()
     }
 }
