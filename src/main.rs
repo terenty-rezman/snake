@@ -25,6 +25,8 @@ pub enum Expression {
     Ident(String),
     Number(i64),
     String(String),
+    ArrayLiteral(Vec<Expression>),
+    ArrayIndexing(String, Box<Expression>),
     Assignment(String, Box<Expression>),
     Add(Box<Expression>, Box<Expression>),
     Sub(Box<Expression>, Box<Expression>),
@@ -35,9 +37,9 @@ pub enum Expression {
     FnCall(String, Box<Expression>),
 }
 
-type DynamicFcn = fn(&mut Mem, &Vec<Rc<Object>>) -> ();
+type BuiltinFcn = fn(&mut Mem, &Vec<Rc<Object>>) -> EvalResult;
 
-fn bln_print(_mem: &mut Mem, args: &Vec<Rc<Object>>) -> () {
+fn snk_print(_mem: &mut Mem, args: &Vec<Rc<Object>>) -> EvalResult {
     for (i, o) in args.iter().enumerate() {
         if i > 0 {
             print!(" ");
@@ -45,23 +47,39 @@ fn bln_print(_mem: &mut Mem, args: &Vec<Rc<Object>>) -> () {
         print!("{}", &o);
     }
     print!("\n");
+
+    Ok(None)
 }
 
-fn bln_mem(mem: &mut Mem, _args: &Vec<Rc<Object>>) -> () {
+fn snk_mem(mem: &mut Mem, _args: &Vec<Rc<Object>>) -> EvalResult {
     println!("{:?}", mem);
+    Ok(None)
 }
 
-fn bln_exit(_mem: &mut Mem, _args: &Vec<Rc<Object>>) -> () {
+fn snk_exit(_mem: &mut Mem, _args: &Vec<Rc<Object>>) -> EvalResult {
     println!("sayōnara");
     std::process::exit(0);
+    Ok(None)
+}
+
+fn snk_len(_mem: &mut Mem, args: &Vec<Rc<Object>>) -> EvalResult {
+    if args.is_empty() {
+        Err("len(x) expects one argument")?
+    }
+
+    match &*args[0] {
+        Object::Array(v) => Ok(Some(Rc::new(Object::Number(v.len() as i64)))),  
+        _ => Err("len(x) expects array as an input")?
+    }
 }
 
 lazy_static! {
-    static ref BUILTINS: HashMap<String, DynamicFcn> = {
+    static ref BUILTINS: HashMap<String, BuiltinFcn> = {
         let mut m = HashMap::new();
-        m.insert("print".to_owned(), bln_print as DynamicFcn);
-        m.insert("mem".to_owned(), bln_mem as DynamicFcn);
-        m.insert("exit".to_owned(), bln_exit as DynamicFcn);
+        m.insert("print".to_owned(), snk_print as BuiltinFcn);
+        m.insert("mem".to_owned(), snk_mem as BuiltinFcn);
+        m.insert("exit".to_owned(), snk_exit as BuiltinFcn);
+        m.insert("len".to_owned(), snk_len as BuiltinFcn);
         m
     };
 }
@@ -69,7 +87,7 @@ lazy_static! {
 peg::parser!( grammar snake_parser() for str {
     // whitespace rules taken from https://gist.github.com/zicklag/aad1944ef7f5dd256218892477f32c64
     // Whitespace character
-    rule whitespace_char() = ['\t' | ' ']
+    rule whitespace_char() = ['\t' | ' ' | ';']
 
     // Line comment
     rule line_comment() = "//" (!"\n" [_])* ("\n" / ![_])
@@ -101,8 +119,18 @@ peg::parser!( grammar snake_parser() for str {
         "-" x:@ { Expression::Neg(x.into()) }
         --
         // fn call
-        _ f:ident() "(" l:expression() ** "," ")" _ {
+        _ f:ident() "(" l:anything() ** "," ")" _ {
             Expression::FnCall(f.to_owned(), Expression::FnArgList(l).into())
+        }
+
+        // array literal
+        _ "[" a:anything() ** "," "]" _ {
+            Expression::ArrayLiteral(a)
+        }
+
+        // array indexing
+        _ i:ident()"[" e:anything() "]" _ {
+            Expression::ArrayIndexing(i.to_string(), e.into())
         }
 
         // identificator
@@ -120,20 +148,20 @@ peg::parser!( grammar snake_parser() for str {
         _ "\"" t:$([^'"']+) "\"" _ { Expression::String(t.to_owned()) }
     }
 
-    rule if_else() -> Expression = _ "if(" c:expression() ")" wn() t:code_block() wn() f:else_block()? {
+    rule if_else() -> Expression = _ "if" _ c:expression() wn() t:code_block() wn() f:else_block()? {
         Expression::IfElseBlock(c.into(), t.into(), f.unwrap_or(Expression::CodeBlock(Vec::new()).into()).into())
     }
 
     rule else_block() -> Expression = _ "else" wn() e:code_block() { e }
 
-    rule while_block() -> Expression = _ "while(" c:expression() ")" wn() b:code_block() { Expression::WhileBlock(c.into(), b.into()) }
+    rule while_block() -> Expression = _ "while" _ c:expression() wn() b:code_block() { Expression::WhileBlock(c.into(), b.into()) }
 
-    rule code_block() -> Expression = _ "{" wn() e:anything() ** wn() wn() "}" _ { Expression::CodeBlock(e) }
+    rule code_block() -> Expression = _ "{" wn() e:(fn_def() / anything()) ** wn() wn() "}" _ { Expression::CodeBlock(e) }
 
     rule assignment() -> Expression = _ i:ident() _ "=" _ n:(code_block() / expression()) { Expression::Assignment(i.to_string(), n.into()) }
 
-    rule fn_def() -> Expression = _ "fn" _ i:ident() "(" l:ident() ** "," ")" wn() b:code_block() { 
-        Expression::FnDef(i.to_string(), l.into_iter().map(|s| s.to_string()).collect(), b.into()) 
+    rule fn_def() -> Expression = _ "fn" _ i:ident() "(" l:ident() ** "," ")" wn() b:code_block() {
+        Expression::FnDef(i.to_string(), l.into_iter().map(|s| s.to_string()).collect(), b.into())
     }
 
     rule anything() -> Expression = assignment() / code_block() / if_else() / while_block() / expression()
@@ -160,7 +188,7 @@ enum Object {
     Str(String),
     Number(i64),
     Array(Vec<Rc<Object>>),
-    Function(Vec<String>, Expression)
+    Function(Vec<String>, Expression),
 }
 
 impl Object {
@@ -169,7 +197,7 @@ impl Object {
             Object::Str(s) => Ok(!s.is_empty()),
             Object::Number(n) => Ok(*n != 0),
             Object::Array(v) => Ok(v.len() != 0),
-            _ => Err(ValueError(format!("{:?} can not eval to bool", self)).into())
+            _ => Err(ValueError(format!("{:?} can not eval to bool", self)).into()),
         }
     }
 }
@@ -177,9 +205,9 @@ impl Object {
 impl std::fmt::Display for Object {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-           Object::Str(s) => write!(f, "{}", s),
-           Object::Number(n) => write!(f, "{}", n),
-           _ => write!(f, "{:?}", self)
+            Object::Str(s) => write!(f, "{}", s),
+            Object::Number(n) => write!(f, "{}", n),
+            _ => write!(f, "{:?}", self),
         }
     }
 }
@@ -208,24 +236,26 @@ fn eval_args_and_do_ariphmetic(
     Ok(Some(Object::Number(result).into()))
 }
 
-
 fn try_call_fn(fcn: &Object, arg_values: &Vec<Rc<Object>>, mem: &mut Mem) -> EvalResult {
     match fcn {
-       Object::Function(arg_names, body) => {
-           if arg_values.len() < arg_names.len() {
-               return Err(ValueError(format!("function expects {} args", arg_names.len())))?;
-           }
+        Object::Function(arg_names, body) => {
+            if arg_values.len() < arg_names.len() {
+                return Err(ValueError(format!(
+                    "function expects {} args",
+                    arg_names.len()
+                )))?;
+            }
 
-           mem.push_scope();
-           for (name, value) in arg_names.iter().zip(arg_values.iter()) {
-               mem.insert_or_modify(name, Rc::clone(value));
-           }
+            mem.push_scope();
+            for (name, value) in arg_names.iter().zip(arg_values.iter()) {
+                mem.insert_or_modify(name, Rc::clone(value));
+            }
 
-           let result = interpret(&body, mem);
-           mem.pop_scope();
-           return result;
-       } 
-       _ => Err(ValueError("callable is not callable".to_string()))?
+            let result = interpret(&body, mem);
+            mem.pop_scope();
+            return result;
+        }
+        _ => Err(ValueError("callable is not callable".to_string()))?,
     }
 }
 
@@ -249,7 +279,7 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
             Ok(None)
         }
 
-        Expression::FnArgList(v) => {
+        Expression::FnArgList(v) | Expression::ArrayLiteral(v) => {
             let mut results = Vec::new();
             for e in v {
                 let r = interpret(e, mem)?.ok_or(ValueError("value expected".to_owned()))?;
@@ -257,6 +287,34 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
             }
 
             Ok(Some(Rc::new(Object::Array(results))))
+        }
+
+        Expression::ArrayIndexing(name, i_expr) => {
+            let obj = mem.lookup(name).ok_or(ValueError("array not found".to_owned()))?;
+
+            let v = match &*obj {
+                Object::Array(v) => v,
+                _ => Err(ValueError("array is expected".into()))?
+            };
+
+            let i = interpret(i_expr, mem)?.ok_or("index expected")?;
+
+            let i = match *i {
+                Object::Number(i) => i,
+                _ => Err("integer expected as array index")?
+            };
+
+            if i < 0 {
+                Err(format!("index cannot be negative: {}", i).as_str())?
+            }
+
+            let i = i as usize;
+
+            if i >= v.len() {
+                Err(format!("index out of bounds: {}", i).as_str())?
+            }
+
+            Ok(Some(Rc::clone(&v[i])))
         }
 
         Expression::Assignment(var_name, expr) => {
@@ -271,13 +329,13 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
         }
 
         Expression::CodeBlock(expr_list) => {
-            let mut val = None;
+            let mut result = None;
             mem.push_scope();
             for expr in expr_list {
-                val = interpret(expr, mem)?;
+                result = interpret(expr, mem)?;
             }
             mem.pop_scope();
-            Ok(val)
+            Ok(result)
         }
 
         Expression::IfElseBlock(cond, true_block, else_block) => {
@@ -343,11 +401,9 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
                         .get(fn_name)
                         .ok_or(ValueError(format!("no such builtin found: '{}'", fn_name)))?;
 
-                    builtin(mem, &args);
-                    Ok(None)
-                } 
+                    builtin(mem, &args)
+                }
             }
-
         }
 
         _ => unimplemented!(),
@@ -480,7 +536,7 @@ fn test_parser() {
         a = 10
         b = 1
 
-        while(a) {
+        while a {
             print(a)
             a = a - 1
         }
@@ -511,6 +567,13 @@ fn test_parser() {
             d = a
             d
         }
+        print(if a { 'yes' } else { 'no' })
+
+        array = [1, 2, 3]
+        array[0]
+        len(array)
+
+        print([1, {c = 1 + 1 sum(c, c)}, 2, sum(2 + 2, 2)])
     ";
 
     let src = normalize_newlines(src);

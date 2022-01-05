@@ -54,7 +54,26 @@ b = 1
 print("a =", a)
 print("b =", b)
 print('a + b =', sum(a, b))
-
+ 
 print(sum)
+
+print(if a { 'yes' } else { 'no' })
+
+array = [1, 2, 3]
+array[0]
+len(array)
+
+fn print_array(a) {
+    i = len(a)
+    while(i) {
+        print(a[i - 1])
+        i = i - 1
+    }
+}
+
+print("printing array:")
+print_array([1, 2, 3])
+
+print([1, {c = 1 + 1 sum(c, c)}, 2, sum(2 + 2, 2)])
 
 mem()
