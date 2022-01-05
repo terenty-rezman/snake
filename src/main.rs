@@ -16,7 +16,7 @@ use std::{
 // have to implement wrapper type and Debug trait manually on the wrapper because of the fcn pointer with lifetimes
 // https://users.rust-lang.org/t/impl-of-debug-is-not-general-enough-error/64284
 #[derive(Clone)]
-pub struct OrdFcn(fn(&i64, &i64)->bool);
+pub struct OrdFcn(fn(&i64, &i64) -> bool);
 
 impl Debug for OrdFcn {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -68,7 +68,7 @@ fn snk_print(_mem: &mut Mem, args: &Vec<Rc<Object>>) -> EvalResult {
         print!("{}", &o);
     }
     print!("\n");
-    std::io::stdout().flush().unwrap();    
+    std::io::stdout().flush().unwrap();
 
     Ok(None)
 }
@@ -90,8 +90,8 @@ fn snk_len(_mem: &mut Mem, args: &Vec<Rc<Object>>) -> EvalResult {
     }
 
     match &*args[0] {
-        Object::Array(v) => Ok(Some(Rc::new(Object::Number(v.len() as i64)))),  
-        _ => Err("len(x) expects array as an input")?
+        Object::Array(v) => Ok(Some(Rc::new(Object::Number(v.len() as i64)))),
+        _ => Err("len(x) expects array as an input")?,
     }
 }
 
@@ -160,7 +160,7 @@ peg::parser!( grammar snake_parser() for str {
 
         // number
         _ n:number() _ { Expression::Number(n) }
-       
+
 
         _ "(" e: (cmp_ops() / expression()) ")" _ { e }
 
@@ -170,21 +170,21 @@ peg::parser!( grammar snake_parser() for str {
         // string
         _ "\"" t:$([^'"']+) "\"" _ { Expression::String(t.to_owned()) }
     }
-    
-    rule less() -> Expression = _ x:expression() "<" y:expression() { 
-        Expression::CmpOperator(OrdFcn(std::cmp::PartialOrd::lt), x.into(), y.into()) 
+
+    rule less() -> Expression = _ x:expression() "<" y:expression() {
+        Expression::CmpOperator(OrdFcn(std::cmp::PartialOrd::lt), x.into(), y.into())
     }
 
-    rule less_eq() -> Expression = _ x:expression() "<=" y:expression() { 
-        Expression::CmpOperator(OrdFcn(std::cmp::PartialOrd::le), x.into(), y.into()) 
+    rule less_eq() -> Expression = _ x:expression() "<=" y:expression() {
+        Expression::CmpOperator(OrdFcn(std::cmp::PartialOrd::le), x.into(), y.into())
     }
 
-    rule greater() -> Expression = _ x:expression() ">" y:expression() { 
-        Expression::CmpOperator(OrdFcn(std::cmp::PartialOrd::gt), x.into(), y.into()) 
+    rule greater() -> Expression = _ x:expression() ">" y:expression() {
+        Expression::CmpOperator(OrdFcn(std::cmp::PartialOrd::gt), x.into(), y.into())
     }
 
-    rule greater_eq() -> Expression = _ x:expression() ">=" y:expression() { 
-        Expression::CmpOperator(OrdFcn(std::cmp::PartialOrd::gt), x.into(), y.into()) 
+    rule greater_eq() -> Expression = _ x:expression() ">=" y:expression() {
+        Expression::CmpOperator(OrdFcn(std::cmp::PartialOrd::gt), x.into(), y.into())
     }
 
     rule cmp_ops() -> Expression = less() / less_eq() / greater() / greater_eq()
@@ -329,18 +329,20 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
         }
 
         Expression::ArrayIndexing(name, i_expr) => {
-            let obj = mem.lookup(name).ok_or(ValueError("array not found".to_owned()))?;
+            let obj = mem
+                .lookup(name)
+                .ok_or(ValueError("array not found".to_owned()))?;
 
             let v = match obj.as_ref() {
                 Object::Array(v) => v,
-                _ => Err(ValueError("array is expected".into()))?
+                _ => Err(ValueError("array is expected".into()))?,
             };
 
             let i = interpret(i_expr, mem)?.ok_or("index expected")?;
 
             let i = match *i {
                 Object::Number(i) => i,
-                _ => Err("integer expected as array index")?
+                _ => Err("integer expected as array index")?,
             };
 
             if i < 0 {
