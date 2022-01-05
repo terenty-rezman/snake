@@ -16,7 +16,7 @@ use std::{
 // have to implement wrapper type and Debug trait manually on the wrapper because of the fcn pointer with lifetimes
 // https://users.rust-lang.org/t/impl-of-debug-is-not-general-enough-error/64284
 #[derive(Clone)]
-pub struct OrdFcn(fn(&i64, &i64) -> bool);
+pub struct OrdFcn(fn(&Object, &Object) -> bool);
 
 impl Debug for OrdFcn {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -32,6 +32,7 @@ pub enum Expression {
     IfElseBlock(Box<Expression>, Box<Expression>, Box<Expression>),
     WhileBlock(Box<Expression>, Box<Expression>),
     CmpOperator(OrdFcn, Box<Expression>, Box<Expression>),
+    EqOperator(Box<Expression>, Box<Expression>),
     Ident(String),
     Number(i64),
     String(String),
@@ -46,17 +47,6 @@ pub enum Expression {
     Neg(Box<Expression>),
     FnCall(String, Box<Expression>),
 }
-
-// have to impl Debug trait manually because of the fcn pointer with lifetimes
-// https://users.rust-lang.org/t/impl-of-debug-is-not-general-enough-error/64284
-// impl Debug for Expression {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         match self {
-//             Self::CmpOperator(_fn_ptr, x, y) => write!(f, "order_fn, {:?}, {:?}", x, y),
-//             _ => write!(f, "{:?}", self)
-//         }
-//     }
-// }
 
 type BuiltinFcn = fn(&mut Mem, &Vec<Rc<Object>>) -> EvalResult;
 
@@ -81,7 +71,6 @@ fn snk_mem(mem: &mut Mem, _args: &Vec<Rc<Object>>) -> EvalResult {
 fn snk_exit(_mem: &mut Mem, _args: &Vec<Rc<Object>>) -> EvalResult {
     println!("sayōnara");
     std::process::exit(0);
-    Ok(None)
 }
 
 fn snk_len(_mem: &mut Mem, args: &Vec<Rc<Object>>) -> EvalResult {
@@ -187,7 +176,11 @@ peg::parser!( grammar snake_parser() for str {
         Expression::CmpOperator(OrdFcn(std::cmp::PartialOrd::gt), x.into(), y.into())
     }
 
-    rule cmp_ops() -> Expression = less() / less_eq() / greater() / greater_eq()
+    rule eq() -> Expression = _ x:expression() "==" y:expression() {
+        Expression::EqOperator(x.into(), y.into())
+    }
+
+    rule cmp_ops() -> Expression = less() / less_eq() / greater() / greater_eq() / eq()
 
     rule if_else() -> Expression = _ "if" _ c:(cmp_ops() / expression()) wn() t:code_block() wn() f:else_block()? {
         Expression::IfElseBlock(c.into(), t.into(), f.unwrap_or(Expression::CodeBlock(Vec::new()).into()).into())
@@ -224,12 +217,36 @@ pub enum EvalError {
 
 use EvalError::*;
 
+// need to provide Ast wrapper for Expression to manually define Ord cmp traits
 #[derive(Debug)]
+struct Ast(Expression);
+
+impl PartialEq for Ast {
+    fn eq(&self, _other: &Ast) -> bool {
+        false
+    }
+}
+
+impl Eq for Ast {}
+
+impl PartialOrd for Ast {
+    fn partial_cmp(&self, _other: &Self) -> Option<std::cmp::Ordering> {
+        unreachable!();
+    }
+}
+
+impl Ord for Ast {
+    fn cmp(&self, _other: &Self) -> std::cmp::Ordering {
+        unreachable!();
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Object {
     Str(String),
     Number(i64),
     Array(Vec<Rc<Object>>),
-    Function(Vec<String>, Expression),
+    Function(Vec<String>, Ast), // need Ast wrapper to use autoderive cmp traits
 }
 
 impl Object {
@@ -292,7 +309,7 @@ fn try_call_fn(fcn: &Object, arg_values: &Vec<Rc<Object>>, mem: &mut Mem) -> Eva
                 mem.insert_or_modify(name, Rc::clone(value));
             }
 
-            let result = interpret(&body, mem);
+            let result = interpret(&body.0, mem);
             mem.pop_scope();
             return result;
         }
@@ -313,7 +330,7 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
 
         Expression::FnDef(name, arg_names, body) => {
             // TODO: clone here is probably can be avoided
-            let fn_obj = Object::Function(arg_names.clone(), *body.clone());
+            let fn_obj = Object::Function(arg_names.clone(), Ast(*body.clone()));
             mem.insert_or_modify(name, Rc::new(fn_obj));
             Ok(None)
         }
@@ -358,19 +375,23 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
             Ok(Some(Rc::clone(&v[i])))
         }
 
+        Expression::EqOperator(x, y) => {
+            let x = interpret(x, mem)?.ok_or(ValueError("value expected".to_owned()))?;
+            let y = interpret(y, mem)?.ok_or(ValueError("value expected".to_owned()))?;
+
+            Ok(Some(Object::Number((x == y) as i64).into()))
+        }
+
         Expression::CmpOperator(OrdFcn(fcn), x, y) => {
             let x = interpret(x, mem)?.ok_or(ValueError("value expected".to_owned()))?;
             let y = interpret(y, mem)?.ok_or(ValueError("value expected".to_owned()))?;
 
-            let x = match *x {
-                Object::Number(n) => n,
-                _ => Err(ValueError("integer expected".to_owned()))?,
-            };
-
-            let y = match *y {
-                Object::Number(n) => n,
-                _ => Err(ValueError("integer expected".to_owned()))?,
-            };
+            // fail comparison for function objects
+            use Object::*;
+            match (x.as_ref(), y.as_ref()) {
+                (Function(_, _), _) | (_, Function(_, _)) => Err("functions cannot be compared")?,
+                _ => {}
+            }
 
             let result = fcn(&x, &y);
 
