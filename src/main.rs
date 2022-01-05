@@ -492,15 +492,18 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
 }
 
 fn print_parse_error(err: &peg::error::ParseError<peg::str::LineCol>, src: &str) {
-    let failed_char = src.chars().nth(err.location.offset).unwrap();
+    // FIXME: with firs char '{' in src string err.location.offset gets wrong value
+    let offset = err.location.offset % src.len();
+
+    let failed_char = src.chars().nth(offset).unwrap();
     println!(
         "Parse error:\n{} <-- expected {}\nfound: '{}'\n[line: {}, column: {}, offset: {}]",
-        &src[0..=err.location.offset],
+        &src[0..=offset],
         err.expected,
         failed_char,
         err.location.line,
         err.location.column,
-        err.location.offset
+        offset
     );
 }
 
@@ -576,7 +579,7 @@ fn repl() {
 
         let mut line = String::new();
         std::io::stdin().read_line(&mut line).unwrap();
-        line = line.trim_end().to_owned();
+        line = normalize_newlines(&line);
 
         if line.is_empty() {
             continue;

@@ -7,16 +7,16 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug executable 'test_parser'",
+            "name": "Debug executable 'snake_parser'",
             "cargo": {
                 "args": [
                     "build",
-                    "--bin=test_parser",
-                    "--package=test_parser",
+                    "--bin=snake_parser",
+                    "--package=snake_parser",
                     // "--features=peg/trace"
                 ],
                 "filter": {
-                    "name": "test_parser",
+                    "name": "snake_parser",
                     "kind": "bin"
                 }
             },
@@ -26,16 +26,16 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug unit tests in executable 'test_parser'",
+            "name": "Debug unit tests in executable 'snake_parser'",
             "cargo": {
                 "args": [
                     "test",
                     "--no-run",
-                    "--bin=test_parser",
-                    "--package=test_parser"
+                    "--bin=snake_parser",
+                    "--package=snake_parser"
                 ],
                 "filter": {
-                    "name": "test_parser",
+                    "name": "snake_parser",
                     "kind": "bin"
                 }
             },
