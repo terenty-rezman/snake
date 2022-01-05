@@ -124,11 +124,11 @@ peg::parser!( grammar snake_parser() for str {
         Expression::IfElseBlock(c.into(), t.into(), f.unwrap_or(Expression::CodeBlock(Vec::new()).into()).into())
     }
 
-    rule else_block() -> Expression = _ "else" _ wn() e:code_block() { e }
+    rule else_block() -> Expression = _ "else" wn() e:code_block() { e }
 
     rule while_block() -> Expression = _ "while(" c:expression() ")" wn() b:code_block() { Expression::WhileBlock(c.into(), b.into()) }
 
-    rule code_block() -> Expression = _ "{" _ wn() e:anything() ** wn() wn() _ "}" _ { Expression::CodeBlock(e) }
+    rule code_block() -> Expression = _ "{" wn() e:anything() ** wn() wn() "}" _ { Expression::CodeBlock(e) }
 
     rule assignment() -> Expression = _ i:ident() _ "=" _ n:(code_block() / expression()) { Expression::Assignment(i.to_string(), n.into()) }
 
@@ -212,8 +212,8 @@ fn eval_args_and_do_ariphmetic(
 fn try_call_fn(fcn: &Object, arg_values: &Vec<Rc<Object>>, mem: &mut Mem) -> EvalResult {
     match fcn {
        Object::Function(arg_names, body) => {
-           if arg_names.len() < arg_values.len() {
-               return Err(ValueError("not enough arg in fcn call".to_string()))?;
+           if arg_values.len() < arg_names.len() {
+               return Err(ValueError(format!("function expects {} args", arg_names.len())))?;
            }
 
            mem.push_scope();
@@ -450,15 +450,14 @@ fn repl() {
             Err(err) => print_parse_error(&err, &line),
 
             // interpret ast
-            Ok(mut expr_list) => {
-                // interpret 1st line
-                let expr = expr_list.remove(0);
-
-                match interpret(&expr, &mut mem) {
-                    Err(err) => println!("Error: {}", &err),
-                    Ok(result) => {
-                        if let Some(result) = result {
-                            println!("{}", result);
+            Ok(expr_list) => {
+                for e in expr_list {
+                    match interpret(&e, &mut mem) {
+                        Err(err) => println!("Error: {}", &err),
+                        Ok(result) => {
+                            if let Some(result) = result {
+                                println!("{}", result);
+                            }
                         }
                     }
                 }
