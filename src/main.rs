@@ -13,15 +13,25 @@ use std::{
     result,
 };
 
-#[derive(Debug, Clone)]
+// have to implement wrapper type and Debug trait manually on the wrapper because of the fcn pointer with lifetimes
+// https://users.rust-lang.org/t/impl-of-debug-is-not-general-enough-error/64284
+#[derive(Clone)]
+pub struct OrdFcn(fn(&i64, &i64)->bool);
+
+impl Debug for OrdFcn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", std::any::type_name::<Self>())
+    }
+}
+
+#[derive(Clone, Debug)]
 pub enum Expression {
-    Void,
     FnDef(String, Vec<String>, Box<Expression>),
     FnArgList(Vec<Expression>),
     CodeBlock(Vec<Expression>),
     IfElseBlock(Box<Expression>, Box<Expression>, Box<Expression>),
     WhileBlock(Box<Expression>, Box<Expression>),
-    ConditionEq(Box<Expression>),
+    CmpOperator(OrdFcn, Box<Expression>, Box<Expression>),
     Ident(String),
     Number(i64),
     String(String),
@@ -37,6 +47,17 @@ pub enum Expression {
     FnCall(String, Box<Expression>),
 }
 
+// have to impl Debug trait manually because of the fcn pointer with lifetimes
+// https://users.rust-lang.org/t/impl-of-debug-is-not-general-enough-error/64284
+// impl Debug for Expression {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         match self {
+//             Self::CmpOperator(_fn_ptr, x, y) => write!(f, "order_fn, {:?}, {:?}", x, y),
+//             _ => write!(f, "{:?}", self)
+//         }
+//     }
+// }
+
 type BuiltinFcn = fn(&mut Mem, &Vec<Rc<Object>>) -> EvalResult;
 
 fn snk_print(_mem: &mut Mem, args: &Vec<Rc<Object>>) -> EvalResult {
@@ -47,6 +68,7 @@ fn snk_print(_mem: &mut Mem, args: &Vec<Rc<Object>>) -> EvalResult {
         print!("{}", &o);
     }
     print!("\n");
+    std::io::stdout().flush().unwrap();    
 
     Ok(None)
 }
@@ -138,8 +160,9 @@ peg::parser!( grammar snake_parser() for str {
 
         // number
         _ n:number() _ { Expression::Number(n) }
+       
 
-        _ "(" e:expression() ")" _ { e }
+        _ "(" e: (cmp_ops() / expression()) ")" _ { e }
 
         // string
         _ "'" t:$([^'\'']+) "'" _ { Expression::String(t.to_owned()) }
@@ -147,24 +170,42 @@ peg::parser!( grammar snake_parser() for str {
         // string
         _ "\"" t:$([^'"']+) "\"" _ { Expression::String(t.to_owned()) }
     }
+    
+    rule less() -> Expression = _ x:expression() "<" y:expression() { 
+        Expression::CmpOperator(OrdFcn(std::cmp::PartialOrd::lt), x.into(), y.into()) 
+    }
 
-    rule if_else() -> Expression = _ "if" _ c:expression() wn() t:code_block() wn() f:else_block()? {
+    rule less_eq() -> Expression = _ x:expression() "<=" y:expression() { 
+        Expression::CmpOperator(OrdFcn(std::cmp::PartialOrd::le), x.into(), y.into()) 
+    }
+
+    rule greater() -> Expression = _ x:expression() ">" y:expression() { 
+        Expression::CmpOperator(OrdFcn(std::cmp::PartialOrd::gt), x.into(), y.into()) 
+    }
+
+    rule greater_eq() -> Expression = _ x:expression() ">=" y:expression() { 
+        Expression::CmpOperator(OrdFcn(std::cmp::PartialOrd::gt), x.into(), y.into()) 
+    }
+
+    rule cmp_ops() -> Expression = less() / less_eq() / greater() / greater_eq()
+
+    rule if_else() -> Expression = _ "if" _ c:(cmp_ops() / expression()) wn() t:code_block() wn() f:else_block()? {
         Expression::IfElseBlock(c.into(), t.into(), f.unwrap_or(Expression::CodeBlock(Vec::new()).into()).into())
     }
 
     rule else_block() -> Expression = _ "else" wn() e:code_block() { e }
 
-    rule while_block() -> Expression = _ "while" _ c:expression() wn() b:code_block() { Expression::WhileBlock(c.into(), b.into()) }
+    rule while_block() -> Expression = _ "while" _ c:(cmp_ops() / expression()) wn() b:code_block() { Expression::WhileBlock(c.into(), b.into()) }
 
     rule code_block() -> Expression = _ "{" wn() e:(fn_def() / anything()) ** wn() wn() "}" _ { Expression::CodeBlock(e) }
 
-    rule assignment() -> Expression = _ i:ident() _ "=" _ n:(code_block() / expression()) { Expression::Assignment(i.to_string(), n.into()) }
+    rule assignment() -> Expression = _ i:ident() _ "=" _ n:(code_block() / if_else() / cmp_ops() / expression()) { Expression::Assignment(i.to_string(), n.into()) }
 
     rule fn_def() -> Expression = _ "fn" _ i:ident() "(" l:ident() ** "," ")" wn() b:code_block() {
         Expression::FnDef(i.to_string(), l.into_iter().map(|s| s.to_string()).collect(), b.into())
     }
 
-    rule anything() -> Expression = assignment() / code_block() / if_else() / while_block() / expression()
+    rule anything() -> Expression = assignment() / code_block() / if_else() / while_block() / cmp_ops() / expression()
 
     pub rule program() -> Vec<Expression>
         = wn() s:(fn_def() / anything()) ** wn() wn() { s }
@@ -261,8 +302,6 @@ fn try_call_fn(fcn: &Object, arg_values: &Vec<Rc<Object>>, mem: &mut Mem) -> Eva
 
 fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
     match exp {
-        Expression::Void => Ok(None),
-
         Expression::Number(i) => Ok(Some(Rc::new(Object::Number(*i)))),
 
         Expression::String(s) => Ok(Some(Rc::new(Object::Str(s.clone())))),
@@ -292,7 +331,7 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
         Expression::ArrayIndexing(name, i_expr) => {
             let obj = mem.lookup(name).ok_or(ValueError("array not found".to_owned()))?;
 
-            let v = match &*obj {
+            let v = match obj.as_ref() {
                 Object::Array(v) => v,
                 _ => Err(ValueError("array is expected".into()))?
             };
@@ -315,6 +354,25 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
             }
 
             Ok(Some(Rc::clone(&v[i])))
+        }
+
+        Expression::CmpOperator(OrdFcn(fcn), x, y) => {
+            let x = interpret(x, mem)?.ok_or(ValueError("value expected".to_owned()))?;
+            let y = interpret(y, mem)?.ok_or(ValueError("value expected".to_owned()))?;
+
+            let x = match *x {
+                Object::Number(n) => n,
+                _ => Err(ValueError("integer expected".to_owned()))?,
+            };
+
+            let y = match *y {
+                Object::Number(n) => n,
+                _ => Err(ValueError("integer expected".to_owned()))?,
+            };
+
+            let result = fcn(&x, &y);
+
+            Ok(Some(Object::Number(result as i64).into()))
         }
 
         Expression::Assignment(var_name, expr) => {
@@ -351,14 +409,14 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
         }
 
         Expression::WhileBlock(cond, body) => {
-            let mut result = Ok(None);
+            let mut result = None;
             while {
                 let cond = interpret(cond, mem)?.ok_or(ValueError("value expected".to_owned()))?;
                 cond.eval_to_bool()?
             } {
-                result = interpret(body, mem)
+                result = interpret(body, mem)?;
             }
-            result
+            Ok(result)
         }
 
         Expression::Add(expr_1, expr_2) => {
@@ -388,7 +446,7 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
         Expression::FnCall(fn_name, expr) => {
             let value = interpret(expr, mem)?.ok_or(ValueError("arg list expected".to_owned()))?;
 
-            let args = match &*value {
+            let args = match value.as_ref() {
                 Object::Array(v) => v,
                 _ => Err(ValueError("arg list is expected".to_owned()))?,
             };
@@ -533,6 +591,16 @@ fn normalize_newlines(src: &str) -> String {
 #[test]
 fn test_parser() {
     let src = "
+        fn print_array(a) {
+            i = 0
+            while (i < len(a)) {
+                print(a[i])
+                i = i + 1
+            }
+        }
+
+        print('printing array:')
+        print_array([1, 2, 3])
         a = 10
         b = 1
 
@@ -574,6 +642,11 @@ fn test_parser() {
         len(array)
 
         print([1, {c = 1 + 1 sum(c, c)}, 2, sum(2 + 2, 2)])
+
+        a > b
+        b >= b
+        a < b
+        a <= b
     ";
 
     let src = normalize_newlines(src);

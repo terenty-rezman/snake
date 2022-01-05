@@ -86,6 +86,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f497285884f3fcff424ffc933e56d7cbca511def0c9831a7f9b5f6153e3cc89b"
 
 [[package]]
+name = "snake_parser"
+version = "0.1.0"
+dependencies = [
+ "lazy_static",
+ "peg",
+ "regex",
+ "thiserror",
+]
+
+[[package]]
 name = "syn"
 version = "1.0.84"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -94,16 +104,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-xid",
-]
-
-[[package]]
-name = "test_parser"
-version = "0.1.0"
-dependencies = [
- "lazy_static",
- "peg",
- "regex",
- "thiserror",
 ]
 
 [[package]]
