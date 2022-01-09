@@ -173,7 +173,7 @@ fn collision_self() {
     collision
 }
 
-fn place_price_random() {
+fn place_prize_random() {
     prize_x = rand_int(screen_w)
     prize_y = rand_int(screen_h)
 }
@@ -217,7 +217,7 @@ while(do_game_loop) {
         screen_w = event[1]
         screen_h = event[2]
 
-        place_price_random()
+        place_prize_random()
         clear_screen()
         draw_full_snake("█")
     }
@@ -241,7 +241,7 @@ while(do_game_loop) {
     if collision_prize() {
         grow_snake(prize_x, prize_y, 2)
 
-        place_price_random()
+        place_prize_random()
         score = score + 1
         print_at_pos(0, 0, score, "magenta")
     }

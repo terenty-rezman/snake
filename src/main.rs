@@ -822,7 +822,7 @@ fn repl() {
             continue;
         }
 
-        // try line program into ast and then interpret
+        // try parse line into ast and then interpret
         match snake_parser::program(&line) {
             Err(err) => print_parse_error(&err, &line),
 
