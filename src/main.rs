@@ -97,7 +97,7 @@ fn snk_mem(_stdout: &mut Stdout, mem: &mut Mem, _args: &Vec<Rc<Object>>) -> Eval
 }
 
 fn snk_exit(_stdout: &mut Stdout, _mem: &mut Mem, _args: &Vec<Rc<Object>>) -> EvalResult {
-    println!("sayōnara");
+    println!("bye");
     std::process::exit(0);
 }
 
@@ -805,7 +805,7 @@ impl Mem {
 
 fn repl() {
     let mut mem = Mem::new();
-    println!("\n💩 v0.1\n");
+    println!("\nsnake interpreter 🐍 v0.1 💩\n");
 
     loop {
         print!("> ");
