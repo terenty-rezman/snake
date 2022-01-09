@@ -459,12 +459,12 @@ impl std::fmt::Display for Object {
             Object::Number(n) => write!(f, "{}", n),
             Object::Array(v) => {
                 write!(f, "[")?;
-                v.iter().enumerate().for_each(|(i, o)| {
+                for (i, o) in v.iter().enumerate() {
                     if i != 0 {
-                        write!(f, ",");
+                        write!(f, ",")?;
                     }
-                    write!(f, "{}", o);
-                });
+                    write!(f, "{}", o)?;
+                }
                 write!(f, "]")
             }
             _ => write!(f, "{:?}", self),
@@ -711,8 +711,6 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
                 }
             }
         }
-
-        _ => unimplemented!(),
     }
 }
 
@@ -983,7 +981,7 @@ use crossterm::{
 
 use std::time::Duration;
 
-fn test_crossterm() -> Result<(), AnyError> {
+fn _test_crossterm() -> Result<(), AnyError> {
     let mut stdout = stdout();
     let mut mem = Mem::new();
 
@@ -1105,7 +1103,7 @@ fn snk_screen_size(_stdout: &mut Stdout, _mem: &mut Mem, _args: &Vec<Rc<Object>>
 }
 
 fn main() {
-    // test_crossterm();
+    // _test_crossterm();
     match get_filename_from_args() {
         Some(file_name) => {
             if let Err(e) = execute_file(file_name) {
