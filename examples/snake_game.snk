@@ -1,0 +1,232 @@
+enter_game_mode()
+
+fn wait_any_key() {
+    wait = 1
+    while(wait) {
+        e = poll_event(1000)
+        if e[0] == "key" {
+            wait = 0
+        }
+    }
+}
+
+fn draw_full_snake(symbol) {
+    i = 0
+    while(i < len(snake_body_x)) {
+        x = snake_body_x[i]
+        y = snake_body_y[i]
+        print_at_pos(x, y, symbol, "green")
+        i = i + 1
+    }
+}
+
+// optimization: draw only head
+fn draw_snake_head(symbol) {
+    x = snake_body_x[0]
+    y = snake_body_y[0]
+    print_at_pos(x, y, symbol, "green")
+}
+
+// optimization: draw only tail
+fn draw_snake_tail(symbol) {
+    last = len(snake_body_x) - 1
+    x = snake_body_x[last]
+    y = snake_body_y[last]
+    print_at_pos(x, y, symbol, "green")
+}
+
+fn draw_prize() {
+    print_at_pos(prize_x, prize_y, "█", "magenta")
+}
+
+fn step_snake() {
+    head_x = snake_body_x[0]
+    head_y = snake_body_y[0]
+
+    new_pos_x = head_x + snake_step_x
+
+    if new_pos_x < 0 {
+        new_pos_x = screen_w
+    }
+
+    if new_pos_x > screen_w {
+        new_pos_x = 0
+    }
+
+    snake_body_x = pop(snake_body_x)
+    snake_body_x = push_front(snake_body_x, new_pos_x)
+
+    new_pos_y = head_y + snake_step_y
+
+    if new_pos_y < 0 {
+        new_pos_y = screen_h
+    }
+
+    if new_pos_y > screen_h {
+        new_pos_y = 0
+    }
+    
+    snake_body_y = pop(snake_body_y)
+    snake_body_y = push_front(snake_body_y, new_pos_y)
+}
+
+fn turn_snake(dir) {
+    if snake_step_x {
+        if dir == "up" {
+            snake_step_x = 0
+            snake_step_y = -1
+        }
+
+        if dir == "down" {
+            snake_step_x = 0
+            snake_step_y = 1
+        }
+    }
+
+    if snake_step_y {
+        if dir == "right" {
+            snake_step_y = 0
+            snake_step_x = 1
+        }
+
+        if dir == "left" {
+            snake_step_y = 0
+            snake_step_x = -1
+        }
+    }
+} 
+
+fn process_keypress(key) {
+    if key == "w" {
+        turn_snake("up")
+    } 
+
+    if key == "a" {
+        turn_snake("left")
+    }
+
+    if key == "s" {
+        turn_snake("down")
+    }
+
+    if key == "d" {
+        turn_snake("right")
+    }
+}
+
+fn collision_prize() {
+    head_x = snake_body_x[0]
+    head_y = snake_body_y[0]
+
+    if head_x == prize_x {
+        if head_y == prize_y {
+            // add 2 to body
+            snake_body_x = push_front(snake_body_x, prize_x)
+            snake_body_y = push_front(snake_body_y, prize_y)
+
+            snake_body_x = push_front(snake_body_x, prize_x)
+            snake_body_y = push_front(snake_body_y, prize_y)
+
+            place_price_random()
+            score = score + 1
+            print_at_pos(0, 0, score, "yellow")
+        }
+    }
+}
+
+fn collision_self() {
+    head_x = snake_body_x[0]
+    head_y = snake_body_y[0]
+    collision = 0
+    
+    // when we eat prize we push_front 2 nodes from head
+    // so we should not check first 3 nodes if they collide
+    i = 3 
+
+    while(i < len(snake_body_x)) {
+        if head_x == snake_body_x[i] {
+            if head_y == snake_body_y[i] {
+                collision = 1
+            }
+        }
+        i = i + 1
+    }
+    collision
+}
+
+fn place_price_random() {
+    prize_x = rand_int(screen_w)
+    prize_y = rand_int(screen_h)
+}
+
+screen_w = 80
+screen_h = 45
+
+prize_x = rand_int(screen_w)
+prize_y = rand_int(screen_h)
+
+snake_step_x = -1
+snake_step_y = 0
+
+// initial snake has 3 squares long
+snake_body_x = [screen_w / 2, screen_w / 2 + 1, screen_w / 2 + 2]
+snake_body_y = [screen_h / 2, screen_h / 2, screen_h / 2]
+
+score = 0
+
+do_game_loop = 1
+game_lost = 0
+while(do_game_loop) {
+    event = poll_event(50)
+
+    if event[0] == "resize" {
+        screen_w = event[1]
+        screen_h = event[2]
+
+        place_price_random()
+        clear_screen()
+        draw_full_snake("█")
+    }
+
+    if event[0] == "key" {
+        key = event[1]
+
+        if key == "q" {
+            do_game_loop = 0
+        }
+        else {
+            process_keypress(key)
+        }
+    }
+
+    // clear only tail pixel
+    draw_snake_tail(" ")
+
+    step_snake()
+    collision_prize()
+    
+    if collision_self() {
+        do_game_loop = 0
+        game_lost = 1
+    }
+
+    // draw only head pixel
+    draw_snake_head("█")
+
+    draw_prize()
+    flush()
+}
+
+if game_lost {
+    print_at_pos(screen_w / 2, screen_h / 2, "YOU LOST!", "magenta")
+    print_at_pos(screen_w / 2, screen_h / 2 + 2, "your score is", "white")
+    print_at_pos(screen_w / 2, screen_h / 2 + 3, score, "yellow")
+    flush()
+    wait_any_key()
+}
+
+leave_game_mode()
+
+if game_lost {
+    print("your score is", score)
+}

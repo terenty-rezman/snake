@@ -1,8 +1,10 @@
+use crossterm::queue;
 use ::lazy_static::lazy_static;
 use ::std::collections::HashMap;
 use peg::error::ExpectedSet;
 use std::f32::consts::E;
 use std::fmt::Debug;
+use std::io::Stdout;
 use std::ops::Neg;
 use std::os::windows::prelude::OsStringExt;
 use std::os::windows::process;
@@ -33,6 +35,7 @@ pub enum Expression {
     WhileBlock(Box<Expression>, Box<Expression>),
     CmpOperator(OrdFcn, Box<Expression>, Box<Expression>),
     EqOperator(Box<Expression>, Box<Expression>),
+    NotEqOperator(Box<Expression>, Box<Expression>),
     Ident(String),
     Number(i64),
     String(String),
@@ -48,9 +51,9 @@ pub enum Expression {
     FnCall(String, Box<Expression>),
 }
 
-type BuiltinFcn = fn(&mut Mem, &Vec<Rc<Object>>) -> EvalResult;
+type BuiltinFcn = fn(&mut Stdout, &mut Mem, &Vec<Rc<Object>>) -> EvalResult;
 
-fn snk_print(_mem: &mut Mem, args: &Vec<Rc<Object>>) -> EvalResult {
+fn snk_print(_stdout: &mut Stdout, _mem: &mut Mem, args: &Vec<Rc<Object>>) -> EvalResult {
     for (i, o) in args.iter().enumerate() {
         if i > 0 {
             print!(" ");
@@ -63,17 +66,17 @@ fn snk_print(_mem: &mut Mem, args: &Vec<Rc<Object>>) -> EvalResult {
     Ok(None)
 }
 
-fn snk_mem(mem: &mut Mem, _args: &Vec<Rc<Object>>) -> EvalResult {
+fn snk_mem(_stdout: &mut Stdout, mem: &mut Mem, _args: &Vec<Rc<Object>>) -> EvalResult {
     println!("{:?}", mem);
     Ok(None)
 }
 
-fn snk_exit(_mem: &mut Mem, _args: &Vec<Rc<Object>>) -> EvalResult {
+fn snk_exit(_stdout: &mut Stdout, _mem: &mut Mem, _args: &Vec<Rc<Object>>) -> EvalResult {
     println!("sayōnara");
     std::process::exit(0);
 }
 
-fn snk_len(_mem: &mut Mem, args: &Vec<Rc<Object>>) -> EvalResult {
+fn snk_len(_stdout: &mut Stdout, _mem: &mut Mem, args: &Vec<Rc<Object>>) -> EvalResult {
     if args.is_empty() {
         Err("len(x) expects one argument")?
     }
@@ -84,7 +87,7 @@ fn snk_len(_mem: &mut Mem, args: &Vec<Rc<Object>>) -> EvalResult {
     }
 }
 
-fn snk_array_push(_mem: &mut Mem, args: &Vec<Rc<Object>>) -> EvalResult {
+fn snk_array_push(_stdout: &mut Stdout, _mem: &mut Mem, args: &Vec<Rc<Object>>) -> EvalResult {
     if args.len() < 2 {
         Err("push() expects 2 arguments")?
     }
@@ -100,7 +103,23 @@ fn snk_array_push(_mem: &mut Mem, args: &Vec<Rc<Object>>) -> EvalResult {
     }
 }
 
-fn snk_array_pop(_mem: &mut Mem, args: &Vec<Rc<Object>>) -> EvalResult {
+fn snk_array_push_front(_stdout: &mut Stdout, _mem: &mut Mem, args: &Vec<Rc<Object>>) -> EvalResult {
+    if args.len() < 2 {
+        Err("push_front() expects 2 arguments")?
+    }
+
+    match args[0].as_ref() {
+        Object::Array(v) => {
+            let value = &args[1];
+            let mut new_vec = v.clone();
+            new_vec.insert(0, Rc::clone(value));
+            Ok(Some(Rc::new(Object::Array(new_vec))))
+        }
+        _ => Err("push(array, value) expects array as an input")?,
+    }
+}
+
+fn snk_array_pop(_stdout: &mut Stdout, _mem: &mut Mem, args: &Vec<Rc<Object>>) -> EvalResult {
     if args.len() < 1 {
         Err("pop() expects 1 argument")?
     }
@@ -123,9 +142,33 @@ lazy_static! {
         m.insert("exit".to_owned(), snk_exit as BuiltinFcn);
         m.insert("len".to_owned(), snk_len as BuiltinFcn);
         m.insert("push".to_owned(), snk_array_push as BuiltinFcn);
+        m.insert("push_front".to_owned(), snk_array_push_front as BuiltinFcn);
         m.insert("pop".to_owned(), snk_array_pop as BuiltinFcn);
+        m.insert("rand_int".to_owned(), snk_rand_int as BuiltinFcn);
+
+        m.insert("enter_game_mode".to_owned(), snk_enter_game_mode as BuiltinFcn);
+        m.insert("leave_game_mode".to_owned(), snk_leave_game_mode as BuiltinFcn);
+        m.insert("poll_event".to_owned(), snk_poll_event as BuiltinFcn);
+        m.insert("clear_screen".to_owned(), snk_clear_screen as BuiltinFcn);
+        m.insert("print_at_pos".to_owned(), snk_print_at_pos as BuiltinFcn);
+        m.insert("flush".to_owned(), snk_flush as BuiltinFcn);
         m
     };
+}
+
+fn snk_rand_int(_stdout: &mut Stdout, _mem: &mut Mem, args: &Vec<Rc<Object>>) -> EvalResult {
+    if args.is_empty() {
+        Err("rand_int(max) expects one argument")?
+    }
+
+    let max = match &*args[0] {
+        Object::Number(n) => *n,
+        _ => Err("rand_int(max) expects integer as an input")?,
+    };
+
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    Ok(Some(Rc::new(Object::Number(rng.gen_range(0..max)))))
 }
 
 peg::parser!( grammar snake_parser() for str {
@@ -213,7 +256,11 @@ peg::parser!( grammar snake_parser() for str {
         Expression::EqOperator(x.into(), y.into())
     }
 
-    rule cmp_ops() -> Expression = less() / less_eq() / greater() / greater_eq() / eq()
+    rule not_eq() -> Expression = _ x:expression() "!=" y:expression() {
+        Expression::NotEqOperator(x.into(), y.into())
+    }
+
+    rule cmp_ops() -> Expression = less() / less_eq() / greater() / greater_eq() / eq() / not_eq()
 
     rule if_else() -> Expression = _ "if" _ c:(cmp_ops() / expression()) wn() t:code_block() wn() f:else_block()? {
         Expression::IfElseBlock(c.into(), t.into(), f.unwrap_or(Expression::CodeBlock(Vec::new()).into()).into())
@@ -280,6 +327,30 @@ enum Object {
     Number(i64),
     Array(Vec<Rc<Object>>),
     Function(Vec<String>, Ast), // need Ast wrapper to use autoderive cmp traits
+}
+
+impl From<&str> for Object {
+    fn from(string: &str) -> Self {
+        Object::Str(string.to_owned())
+    }
+}
+
+impl From<i64> for Object {
+    fn from(n: i64) -> Self {
+        Object::Number(n)
+    }
+}
+
+macro_rules! object_vec {
+    ( $( $x:expr ),* ) => {
+        {
+            let mut obj_vec = Vec::<Rc<Object>>::new();
+            $(
+                obj_vec.push(Rc::new($x.into()));
+            )*
+            obj_vec
+        }
+    };
 }
 
 impl Object {
@@ -425,6 +496,13 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
             Ok(Some(Object::Number((x == y) as i64).into()))
         }
 
+        Expression::NotEqOperator(x, y) => {
+            let x = interpret(x, mem)?.ok_or(ValueError("value expected".to_owned()))?;
+            let y = interpret(y, mem)?.ok_or(ValueError("value expected".to_owned()))?;
+
+            Ok(Some(Object::Number((x != y) as i64).into()))
+        }
+
         Expression::CmpOperator(OrdFcn(fcn), x, y) => {
             let x = interpret(x, mem)?.ok_or(ValueError("value expected".to_owned()))?;
             let y = interpret(y, mem)?.ok_or(ValueError("value expected".to_owned()))?;
@@ -525,7 +603,7 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
                         .get(fn_name)
                         .ok_or(ValueError(format!("no such builtin found: '{}'", fn_name)))?;
 
-                    builtin(mem, &args)
+                    builtin(&mut stdout(), mem, &args)
                 }
             }
         }
@@ -775,7 +853,131 @@ fn get_filename_from_args() -> Option<String> {
     None
 }
 
+use crossterm::{
+    cursor,
+    event::{poll, read, Event, KeyCode},
+    execute,
+    style::{self, Print, Color, SetForegroundColor},
+    terminal::{
+        self, disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    },
+    ExecutableCommand, QueueableCommand,
+};
+
+use std::time::Duration;
+
+fn test_crossterm() -> Result<(), AnyError> {
+    let mut stdout = stdout();
+    let mut mem = Mem::new();
+
+    let args = object_vec![2000];
+
+    snk_enter_game_mode(&mut stdout, &mut mem, &args);
+    loop {
+        if let Object::Array(v) = snk_poll_event(&mut stdout, &mut mem, &args)?.ok_or("")?.as_ref() {
+            if *v[0] == "key".into() {
+                if *v[1] == "q".into() {
+                    break;
+                }
+            }
+        };
+    }
+    snk_leave_game_mode(&mut stdout, &mut mem, &args);
+
+    Ok(())
+}
+
+fn snk_print_at_pos(stdout: &mut Stdout, _mem: &mut Mem, args: &Vec<Rc<Object>>) -> EvalResult {
+    if args.len() < 3 {
+        Err("print_at_pos(x, y, 'text', 'color') expects 4 args")?;
+    }
+
+    let x = match args[0].as_ref() {
+        Object::Number(x) => *x,
+        _ => Err("integer expected")?,
+    };
+
+    let y = match args[1].as_ref() {
+        Object::Number(y) => *y,
+        _ => Err("integer expected")?,
+    };
+
+    let text = format!("{}", args[2].as_ref());
+
+    let color = match args[3].as_ref() {
+        Object::Str(y) => y,
+        _ => Err("str expected")?,
+    };
+
+    let color = match color.as_str() {
+        "green" => Color::Green,
+        "dark_green" => Color::DarkGreen,
+        "magenta" => Color::Magenta,
+        _ => Color::White
+    };
+
+    queue!(stdout, cursor::MoveTo(x as u16,y as u16), SetForegroundColor(color), Print(text.as_str()));
+    Ok(None)
+}
+
+fn snk_flush(stdout: &mut Stdout, _mem: &mut Mem, _args: &Vec<Rc<Object>>) -> EvalResult {
+    stdout.flush();
+    Ok(None)
+}
+
+fn snk_enter_game_mode(stdout: &mut Stdout, _mem: &mut Mem, _args: &Vec<Rc<Object>>) -> EvalResult {
+    enable_raw_mode()?;
+    execute!(stdout, EnterAlternateScreen, cursor::Hide)?;
+    Ok(None)
+}
+
+fn snk_leave_game_mode(stdout: &mut Stdout, _mem: &mut Mem, _args: &Vec<Rc<Object>>) -> EvalResult {
+    disable_raw_mode()?;
+    execute!(stdout, LeaveAlternateScreen, cursor::Show)?;
+    Ok(None)
+}
+
+fn snk_clear_screen(stdout: &mut Stdout, _mem: &mut Mem, _args: &Vec<Rc<Object>>) -> EvalResult {
+    queue!(stdout, terminal::Clear(terminal::ClearType::All))?;
+    Ok(None)
+}
+
+fn snk_poll_event(_stdout: &mut Stdout, _mem: &mut Mem, args: &Vec<Rc<Object>>) -> EvalResult {
+    if args.len() < 1 {
+        Err("poll_event(timeout_ms) expects 1 arg")?
+    }
+
+    let timeout_ms = match args[0].as_ref() {
+        Object::Number(timeout) => *timeout,
+        _ => Err("integer expected")?,
+    };
+
+    let ev = if poll(Duration::from_millis(timeout_ms as u64))? {
+        match read()? {
+            Event::Key(event) => match event.code {
+                KeyCode::Char(c) => Object::Array(object_vec!["key", c.to_string().to_lowercase().as_str()]),
+                _ => {
+                    println!("{:?}", event);
+                    Object::Array(object_vec!["unimpl"])
+                }
+            },
+            Event::Resize(width, height) => {
+                Object::Array(object_vec!["resize", width as i64, height as i64])
+            }
+            _ => {
+                println!(".");
+                Object::Array(object_vec!["unimpl"])
+            }
+        }
+    } else {
+        Object::Array(object_vec!["none"])
+    };
+
+    Ok(Some(Rc::new(ev)))
+}
+
 fn main() {
+    // test_crossterm();
     match get_filename_from_args() {
         Some(file_name) => {
             if let Err(e) = execute_file(file_name) {
