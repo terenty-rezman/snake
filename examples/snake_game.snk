@@ -1,13 +1,28 @@
-enter_game_mode()
+fn print_welcome_banner() {
+    print_at_pos(0, 0, "the SNAKE", "magenta")
+    print_at_pos(0, 2, "w a s d - to control the snake", "white")
+    print_at_pos(0, 3, "q - to exit", "white")
+    print_at_pos(0, 5, "press any key to continue", "white")
+    flush()
+}
 
 fn wait_any_key() {
     wait = 1
+    key = "none"
     while(wait) {
         e = poll_event(1000)
         if e[0] == "key" {
+            key = e[1]
             wait = 0
         }
     }
+    key
+}
+
+fn update_screen_size() {
+    sizes = screen_size()
+    screen_w = sizes[0]
+    screen_h = sizes[1]
 }
 
 fn draw_full_snake(symbol) {
@@ -34,6 +49,17 @@ fn draw_snake_tail(symbol) {
     y = snake_body_y[last]
     print_at_pos(x, y, symbol, "green")
 }
+
+// add blocks with given pos to snake body
+fn grow_snake(x, y, block_count) {
+    i = 0
+    while(i < block_count) {
+        snake_body_x = push_front(snake_body_x, x)
+        snake_body_y = push_front(snake_body_y, y)
+        i = i + 1
+    }
+}
+
 
 fn draw_prize() {
     print_at_pos(prize_x, prize_y, "█", "magenta")
@@ -117,21 +143,14 @@ fn process_keypress(key) {
 fn collision_prize() {
     head_x = snake_body_x[0]
     head_y = snake_body_y[0]
+    collision = 0
 
     if head_x == prize_x {
         if head_y == prize_y {
-            // add 2 to body
-            snake_body_x = push_front(snake_body_x, prize_x)
-            snake_body_y = push_front(snake_body_y, prize_y)
-
-            snake_body_x = push_front(snake_body_x, prize_x)
-            snake_body_y = push_front(snake_body_y, prize_y)
-
-            place_price_random()
-            score = score + 1
-            print_at_pos(0, 0, score, "yellow")
+            collision = 1
         }
     }
+    collision
 }
 
 fn collision_self() {
@@ -162,6 +181,8 @@ fn place_price_random() {
 screen_w = 80
 screen_h = 45
 
+update_screen_size()
+
 prize_x = rand_int(screen_w)
 prize_y = rand_int(screen_h)
 
@@ -173,9 +194,22 @@ snake_body_x = [screen_w / 2, screen_w / 2 + 1, screen_w / 2 + 2]
 snake_body_y = [screen_h / 2, screen_h / 2, screen_h / 2]
 
 score = 0
-
 do_game_loop = 1
 game_lost = 0
+
+enter_game_mode()
+
+print_welcome_banner()
+key = wait_any_key()
+
+// exit if 'q' pressed on welcome screen
+if key == "q" {
+    do_game_loop = 0
+}
+else {
+    clear_screen()
+}
+
 while(do_game_loop) {
     event = poll_event(50)
 
@@ -203,7 +237,14 @@ while(do_game_loop) {
     draw_snake_tail(" ")
 
     step_snake()
-    collision_prize()
+
+    if collision_prize() {
+        grow_snake(prize_x, prize_y, 2)
+
+        place_price_random()
+        score = score + 1
+        print_at_pos(0, 0, score, "magenta")
+    }
     
     if collision_self() {
         do_game_loop = 0
@@ -220,7 +261,7 @@ while(do_game_loop) {
 if game_lost {
     print_at_pos(screen_w / 2, screen_h / 2, "YOU LOST!", "magenta")
     print_at_pos(screen_w / 2, screen_h / 2 + 2, "your score is", "white")
-    print_at_pos(screen_w / 2, screen_h / 2 + 3, score, "yellow")
+    print_at_pos(screen_w / 2, screen_h / 2 + 3, score, "magenta")
     flush()
     wait_any_key()
 }

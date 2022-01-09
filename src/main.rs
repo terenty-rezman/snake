@@ -149,6 +149,7 @@ lazy_static! {
         m.insert("enter_game_mode".to_owned(), snk_enter_game_mode as BuiltinFcn);
         m.insert("leave_game_mode".to_owned(), snk_leave_game_mode as BuiltinFcn);
         m.insert("poll_event".to_owned(), snk_poll_event as BuiltinFcn);
+        m.insert("screen_size".to_owned(), snk_screen_size as BuiltinFcn);
         m.insert("clear_screen".to_owned(), snk_clear_screen as BuiltinFcn);
         m.insert("print_at_pos".to_owned(), snk_print_at_pos as BuiltinFcn);
         m.insert("flush".to_owned(), snk_flush as BuiltinFcn);
@@ -957,7 +958,6 @@ fn snk_poll_event(_stdout: &mut Stdout, _mem: &mut Mem, args: &Vec<Rc<Object>>) 
             Event::Key(event) => match event.code {
                 KeyCode::Char(c) => Object::Array(object_vec!["key", c.to_string().to_lowercase().as_str()]),
                 _ => {
-                    println!("{:?}", event);
                     Object::Array(object_vec!["unimpl"])
                 }
             },
@@ -965,15 +965,21 @@ fn snk_poll_event(_stdout: &mut Stdout, _mem: &mut Mem, args: &Vec<Rc<Object>>) 
                 Object::Array(object_vec!["resize", width as i64, height as i64])
             }
             _ => {
-                println!(".");
                 Object::Array(object_vec!["unimpl"])
             }
         }
     } else {
-        Object::Array(object_vec!["none"])
+        Object::Array(object_vec!["timeout"])
     };
 
     Ok(Some(Rc::new(ev)))
+}
+
+fn snk_screen_size(stdout: &mut Stdout, _mem: &mut Mem, _args: &Vec<Rc<Object>>) -> EvalResult {
+    let (w, h) = terminal::size()?;
+    let result = object_vec![w as i64, h as i64];
+
+    Ok(Some(Rc::new(Object::Array(result))))
 }
 
 fn main() {
