@@ -1,19 +1,12 @@
-use crossterm::queue;
 use ::lazy_static::lazy_static;
 use ::std::collections::HashMap;
-use peg::error::ExpectedSet;
-use std::f32::consts::E;
+use crossterm::queue;
 use std::fmt::Debug;
 use std::io::Stdout;
 use std::ops::Neg;
-use std::os::windows::prelude::OsStringExt;
-use std::os::windows::process;
 use std::rc::Rc;
 
-use std::{
-    io::{stdout, Write},
-    result,
-};
+use std::io::{stdout, Write};
 
 // have to implement wrapper type and Debug trait manually on the wrapper because of the fcn pointer with lifetimes
 // https://users.rust-lang.org/t/impl-of-debug-is-not-general-enough-error/64284
@@ -28,27 +21,59 @@ impl Debug for OrdFcn {
 
 #[derive(Clone, Debug)]
 pub enum Expression {
-    FnDef(String, Vec<String>, Box<Expression>),
-    FnArgList(Vec<Expression>),
+    FnDef {
+        name: String,
+        arg_names: Vec<String>,
+        body: Box<Expression>,
+    },
+
+    FnCall {
+        name: String,
+        args: Vec<Expression>,
+    },
+
     CodeBlock(Vec<Expression>),
-    IfElseBlock(Box<Expression>, Box<Expression>, Box<Expression>),
-    WhileBlock(Box<Expression>, Box<Expression>),
-    CmpOperator(OrdFcn, Box<Expression>, Box<Expression>),
+
+    IfElseBlock {
+        cond: Box<Expression>,
+        true_block: Box<Expression>,
+        else_block: Box<Expression>,
+    },
+
+    WhileBlock {
+        cond: Box<Expression>,
+        body: Box<Expression>,
+    },
+
+    CmpOperator {
+        ord_fn: OrdFcn,
+        lhs: Box<Expression>,
+        rhs: Box<Expression>,
+    },
+
     EqOperator(Box<Expression>, Box<Expression>),
     NotEqOperator(Box<Expression>, Box<Expression>),
     Ident(String),
     Number(i64),
     String(String),
     ArrayLiteral(Vec<Expression>),
-    ArrayIndexing(String, Box<Expression>),
-    Assignment(String, Box<Expression>),
+
+    ArrayIndexing {
+        arr_name: String,
+        expr: Box<Expression>,
+    },
+
+    Assignment {
+        var_name: String,
+        expr: Box<Expression>,
+    },
+
     Add(Box<Expression>, Box<Expression>),
     Sub(Box<Expression>, Box<Expression>),
     Mul(Box<Expression>, Box<Expression>),
     Div(Box<Expression>, Box<Expression>),
     Pow(Box<Expression>, Box<Expression>),
     Neg(Box<Expression>),
-    FnCall(String, Box<Expression>),
 }
 
 type BuiltinFcn = fn(&mut Stdout, &mut Mem, &Vec<Rc<Object>>) -> EvalResult;
@@ -103,7 +128,11 @@ fn snk_array_push(_stdout: &mut Stdout, _mem: &mut Mem, args: &Vec<Rc<Object>>) 
     }
 }
 
-fn snk_array_push_front(_stdout: &mut Stdout, _mem: &mut Mem, args: &Vec<Rc<Object>>) -> EvalResult {
+fn snk_array_push_front(
+    _stdout: &mut Stdout,
+    _mem: &mut Mem,
+    args: &Vec<Rc<Object>>,
+) -> EvalResult {
     if args.len() < 2 {
         Err("push_front() expects 2 arguments")?
     }
@@ -146,8 +175,14 @@ lazy_static! {
         m.insert("pop".to_owned(), snk_array_pop as BuiltinFcn);
         m.insert("rand_int".to_owned(), snk_rand_int as BuiltinFcn);
 
-        m.insert("enter_game_mode".to_owned(), snk_enter_game_mode as BuiltinFcn);
-        m.insert("leave_game_mode".to_owned(), snk_leave_game_mode as BuiltinFcn);
+        m.insert(
+            "enter_game_mode".to_owned(),
+            snk_enter_game_mode as BuiltinFcn,
+        );
+        m.insert(
+            "leave_game_mode".to_owned(),
+            snk_leave_game_mode as BuiltinFcn,
+        );
         m.insert("poll_event".to_owned(), snk_poll_event as BuiltinFcn);
         m.insert("screen_size".to_owned(), snk_screen_size as BuiltinFcn);
         m.insert("clear_screen".to_owned(), snk_clear_screen as BuiltinFcn);
@@ -208,7 +243,10 @@ peg::parser!( grammar snake_parser() for str {
         --
         // fn call
         _ f:ident() "(" l:anything() ** "," ")" _ {
-            Expression::FnCall(f.to_owned(), Expression::FnArgList(l).into())
+            Expression::FnCall {
+                name: f.to_owned(), args:
+                l.into()
+            }
         }
 
         // array literal
@@ -218,7 +256,10 @@ peg::parser!( grammar snake_parser() for str {
 
         // array indexing
         _ i:ident()"[" e:anything() "]" _ {
-            Expression::ArrayIndexing(i.to_string(), e.into())
+            Expression::ArrayIndexing {
+                arr_name: i.to_string(),
+                expr: e.into()
+            }
         }
 
         // identificator
@@ -226,7 +267,6 @@ peg::parser!( grammar snake_parser() for str {
 
         // number
         _ n:number() _ { Expression::Number(n) }
-
 
         _ "(" e: (cmp_ops() / expression()) ")" _ { e }
 
@@ -237,47 +277,94 @@ peg::parser!( grammar snake_parser() for str {
         _ "\"" t:$([^'"']+) "\"" _ { Expression::String(t.to_owned()) }
     }
 
-    rule less() -> Expression = _ x:expression() "<" y:expression() {
-        Expression::CmpOperator(OrdFcn(std::cmp::PartialOrd::lt), x.into(), y.into())
+    rule less() -> Expression
+        = _ x:expression() "<" y:expression() {
+        Expression::CmpOperator {
+            ord_fn: OrdFcn(std::cmp::PartialOrd::lt),
+            lhs: x.into(),
+            rhs: y.into()
+        }
     }
 
-    rule less_eq() -> Expression = _ x:expression() "<=" y:expression() {
-        Expression::CmpOperator(OrdFcn(std::cmp::PartialOrd::le), x.into(), y.into())
+    rule less_eq() -> Expression
+        = _ x:expression() "<=" y:expression() {
+        Expression::CmpOperator {
+            ord_fn: OrdFcn(std::cmp::PartialOrd::le),
+            lhs: x.into(),
+            rhs: y.into()
+        }
     }
 
-    rule greater() -> Expression = _ x:expression() ">" y:expression() {
-        Expression::CmpOperator(OrdFcn(std::cmp::PartialOrd::gt), x.into(), y.into())
+    rule greater() -> Expression
+        = _ x:expression() ">" y:expression() {
+        Expression::CmpOperator{
+            ord_fn: OrdFcn(std::cmp::PartialOrd::gt),
+            lhs: x.into(),
+            rhs: y.into()
+        }
     }
 
-    rule greater_eq() -> Expression = _ x:expression() ">=" y:expression() {
-        Expression::CmpOperator(OrdFcn(std::cmp::PartialOrd::gt), x.into(), y.into())
+    rule greater_eq() -> Expression
+        = _ x:expression() ">=" y:expression() {
+        Expression::CmpOperator {
+            ord_fn: OrdFcn(std::cmp::PartialOrd::gt), lhs:
+            x.into(), rhs:
+            y.into()
+        }
     }
 
-    rule eq() -> Expression = _ x:expression() "==" y:expression() {
+    rule eq() -> Expression
+        = _ x:expression() "==" y:expression() {
         Expression::EqOperator(x.into(), y.into())
     }
 
-    rule not_eq() -> Expression = _ x:expression() "!=" y:expression() {
+    rule not_eq() -> Expression
+        = _ x:expression() "!=" y:expression() {
         Expression::NotEqOperator(x.into(), y.into())
     }
 
     rule cmp_ops() -> Expression = less() / less_eq() / greater() / greater_eq() / eq() / not_eq()
 
-    rule if_else() -> Expression = _ "if" _ c:(cmp_ops() / expression()) wn() t:code_block() wn() f:else_block()? {
-        Expression::IfElseBlock(c.into(), t.into(), f.unwrap_or(Expression::CodeBlock(Vec::new()).into()).into())
+    rule if_else() -> Expression
+        = _ "if" _ c:(cmp_ops() / expression()) wn() t:code_block() wn() e:else_block()? {
+        Expression::IfElseBlock {
+            cond: c.into(),
+            true_block: t.into(),
+            else_block: e.unwrap_or(Expression::CodeBlock(Vec::new()).into()).into()
+        }
     }
 
     rule else_block() -> Expression = _ "else" wn() e:code_block() { e }
 
-    rule while_block() -> Expression = _ "while" _ c:(cmp_ops() / expression()) wn() b:code_block() { Expression::WhileBlock(c.into(), b.into()) }
+    rule while_block() -> Expression
+        = _ "while" _ c:(cmp_ops() / expression()) wn() b:code_block() {
+            Expression::WhileBlock {
+                cond: c.into(),
+                body: b.into()
+            }
+        }
 
-    rule code_block() -> Expression = _ "{" wn() e:(fn_def() / anything()) ** wn() wn() "}" _ { Expression::CodeBlock(e) }
+    rule code_block() -> Expression
+        = _ "{" wn() e:(fn_def() / anything()) ** wn() wn() "}" _ {
+            Expression::CodeBlock(e)
+        }
 
-    rule assignment() -> Expression = _ i:ident() _ "=" _ n:(code_block() / if_else() / cmp_ops() / expression()) { Expression::Assignment(i.to_string(), n.into()) }
+    rule assignment() -> Expression
+        = _ i:ident() _ "=" _ n:(code_block() / if_else() / cmp_ops() / expression()) {
+            Expression::Assignment {
+                var_name: i.to_string(),
+                expr: n.into()
+            }
+        }
 
-    rule fn_def() -> Expression = _ "fn" _ i:ident() "(" l:ident() ** "," ")" wn() b:code_block() {
-        Expression::FnDef(i.to_string(), l.into_iter().map(|s| s.to_string()).collect(), b.into())
-    }
+    rule fn_def() -> Expression
+        = _ "fn" _ i:ident() "(" l:ident() ** "," ")" wn() b:code_block() {
+            Expression::FnDef {
+                name: i.to_string(),
+                arg_names: l.into_iter().map(|s| s.to_string()).collect(),
+                body: b.into()
+            }
+        }
 
     rule anything() -> Expression = assignment() / code_block() / if_else() / while_block() / cmp_ops() / expression()
 
@@ -443,14 +530,18 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
             None => Err(ValueError(format!("'{}' variable not found", id)).into()),
         },
 
-        Expression::FnDef(name, arg_names, body) => {
+        Expression::FnDef {
+            name,
+            arg_names,
+            body,
+        } => {
             // TODO: clone here is probably can be avoided
             let fn_obj = Object::Function(arg_names.clone(), Ast(*body.clone()));
             mem.insert_or_modify(name, Rc::new(fn_obj));
             Ok(None)
         }
 
-        Expression::FnArgList(v) | Expression::ArrayLiteral(v) => {
+        Expression::ArrayLiteral(v) => {
             let mut results = Vec::new();
             for e in v {
                 let r = interpret(e, mem)?.ok_or(ValueError("value expected".to_owned()))?;
@@ -460,9 +551,9 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
             Ok(Some(Rc::new(Object::Array(results))))
         }
 
-        Expression::ArrayIndexing(name, i_expr) => {
+        Expression::ArrayIndexing { arr_name, expr } => {
             let obj = mem
-                .lookup(name)
+                .lookup(arr_name)
                 .ok_or(ValueError("array not found".to_owned()))?;
 
             let v = match obj.as_ref() {
@@ -470,7 +561,7 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
                 _ => Err(ValueError("array is expected".into()))?,
             };
 
-            let i = interpret(i_expr, mem)?.ok_or("index expected")?;
+            let i = interpret(expr, mem)?.ok_or("index expected")?;
 
             let i = match *i {
                 Object::Number(i) => i,
@@ -504,7 +595,11 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
             Ok(Some(Object::Number((x != y) as i64).into()))
         }
 
-        Expression::CmpOperator(OrdFcn(fcn), x, y) => {
+        Expression::CmpOperator {
+            ord_fn: OrdFcn(fcn),
+            lhs: x,
+            rhs: y,
+        } => {
             let x = interpret(x, mem)?.ok_or(ValueError("value expected".to_owned()))?;
             let y = interpret(y, mem)?.ok_or(ValueError("value expected".to_owned()))?;
 
@@ -520,7 +615,7 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
             Ok(Some(Object::Number(result as i64).into()))
         }
 
-        Expression::Assignment(var_name, expr) => {
+        Expression::Assignment { var_name, expr } => {
             let value = interpret(expr, mem)?;
             match value {
                 None => Err(ValueError("value expected".to_owned()).into()),
@@ -541,7 +636,11 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
             Ok(result)
         }
 
-        Expression::IfElseBlock(cond, true_block, else_block) => {
+        Expression::IfElseBlock {
+            cond,
+            true_block,
+            else_block,
+        } => {
             let cond = interpret(cond, mem)?.ok_or(ValueError("value expected".to_owned()))?;
 
             let is_true = cond.eval_to_bool()?;
@@ -553,7 +652,7 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
             result
         }
 
-        Expression::WhileBlock(cond, body) => {
+        Expression::WhileBlock { cond, body } => {
             let mut result = None;
             while {
                 let cond = interpret(cond, mem)?.ok_or(ValueError("value expected".to_owned()))?;
@@ -588,23 +687,27 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
             eval_args_and_do_ariphmetic(expr_1, &Expression::Number(0), |x, _| x.neg(), mem)
         }
 
-        Expression::FnCall(fn_name, expr) => {
-            let value = interpret(expr, mem)?.ok_or(ValueError("arg list expected".to_owned()))?;
+        Expression::FnCall {
+            name: fn_name,
+            args,
+        } => {
+            // eval all arg expressions to values
+            let mut arg_values = Vec::new();
+            for e in args {
+                let r = interpret(e, mem)?.ok_or(ValueError("value expected".to_owned()))?;
+                arg_values.push(r);
+            }
 
-            let args = match value.as_ref() {
-                Object::Array(v) => v,
-                _ => Err(ValueError("arg list is expected".to_owned()))?,
-            };
-
+            // lookup fcn name in memory if fails try builtins
             match mem.lookup(fn_name) {
-                Some(fcn) => try_call_fn(fcn.as_ref(), args, mem),
+                Some(fcn) => try_call_fn(fcn.as_ref(), &arg_values, mem),
                 None => {
                     // try to match builtins
                     let builtin = BUILTINS
                         .get(fn_name)
                         .ok_or(ValueError(format!("no such builtin found: '{}'", fn_name)))?;
 
-                    builtin(&mut stdout(), mem, &args)
+                    builtin(&mut stdout(), mem, &arg_values)
                 }
             }
         }
@@ -614,13 +717,22 @@ fn interpret(exp: &Expression, mem: &mut Mem) -> EvalResult {
 }
 
 fn print_parse_error(err: &peg::error::ParseError<peg::str::LineCol>, src: &str) {
-    // FIXME: with firs char '{' in src string err.location.offset gets wrong value
-    let offset = err.location.offset % src.len();
+    let offset = err.location.offset;
+    use std::cmp::{max, min};
 
-    let failed_char = src.chars().nth(offset).unwrap();
+    let mut src_end = offset;
+
+    let failed_char = if offset >= src.len() {
+        // when err at EOF we need to limit src_end to src len
+        src_end = min(offset, max(src.len() - 1, 0));
+        "EOF".to_owned()
+    } else {
+        src.chars().nth(offset).unwrap().to_string()
+    };
+
     println!(
         "Parse error:\n{} <-- expected {}\nfound: '{}'\n[line: {}, column: {}, offset: {}]",
-        &src[0..=offset],
+        &src[0..=src_end],
         err.expected,
         failed_char,
         err.location.line,
@@ -629,7 +741,7 @@ fn print_parse_error(err: &peg::error::ParseError<peg::str::LineCol>, src: &str)
     );
 }
 
-use std::{collections, fs};
+use std::fs;
 
 type Scope = HashMap<String, Rc<Object>>;
 
@@ -858,11 +970,10 @@ use crossterm::{
     cursor,
     event::{poll, read, Event, KeyCode},
     execute,
-    style::{self, Print, Color, SetForegroundColor},
+    style::{Color, Print, SetForegroundColor},
     terminal::{
         self, disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
     },
-    ExecutableCommand, QueueableCommand,
 };
 
 use std::time::Duration;
@@ -873,9 +984,12 @@ fn test_crossterm() -> Result<(), AnyError> {
 
     let args = object_vec![2000];
 
-    snk_enter_game_mode(&mut stdout, &mut mem, &args);
+    snk_enter_game_mode(&mut stdout, &mut mem, &args)?;
     loop {
-        if let Object::Array(v) = snk_poll_event(&mut stdout, &mut mem, &args)?.ok_or("")?.as_ref() {
+        if let Object::Array(v) = snk_poll_event(&mut stdout, &mut mem, &args)?
+            .ok_or("")?
+            .as_ref()
+        {
             if *v[0] == "key".into() {
                 if *v[1] == "q".into() {
                     break;
@@ -883,7 +997,7 @@ fn test_crossterm() -> Result<(), AnyError> {
             }
         };
     }
-    snk_leave_game_mode(&mut stdout, &mut mem, &args);
+    snk_leave_game_mode(&mut stdout, &mut mem, &args)?;
 
     Ok(())
 }
@@ -914,15 +1028,20 @@ fn snk_print_at_pos(stdout: &mut Stdout, _mem: &mut Mem, args: &Vec<Rc<Object>>)
         "green" => Color::Green,
         "dark_green" => Color::DarkGreen,
         "magenta" => Color::Magenta,
-        _ => Color::White
+        _ => Color::White,
     };
 
-    queue!(stdout, cursor::MoveTo(x as u16,y as u16), SetForegroundColor(color), Print(text.as_str()));
+    queue!(
+        stdout,
+        cursor::MoveTo(x as u16, y as u16),
+        SetForegroundColor(color),
+        Print(text.as_str())
+    )?;
     Ok(None)
 }
 
 fn snk_flush(stdout: &mut Stdout, _mem: &mut Mem, _args: &Vec<Rc<Object>>) -> EvalResult {
-    stdout.flush();
+    stdout.flush()?;
     Ok(None)
 }
 
@@ -956,17 +1075,15 @@ fn snk_poll_event(_stdout: &mut Stdout, _mem: &mut Mem, args: &Vec<Rc<Object>>) 
     let ev = if poll(Duration::from_millis(timeout_ms as u64))? {
         match read()? {
             Event::Key(event) => match event.code {
-                KeyCode::Char(c) => Object::Array(object_vec!["key", c.to_string().to_lowercase().as_str()]),
-                _ => {
-                    Object::Array(object_vec!["unimpl"])
+                KeyCode::Char(c) => {
+                    Object::Array(object_vec!["key", c.to_string().to_lowercase().as_str()])
                 }
+                _ => Object::Array(object_vec!["unimpl"]),
             },
             Event::Resize(width, height) => {
                 Object::Array(object_vec!["resize", width as i64, height as i64])
             }
-            _ => {
-                Object::Array(object_vec!["unimpl"])
-            }
+            _ => Object::Array(object_vec!["unimpl"]),
         }
     } else {
         Object::Array(object_vec!["timeout"])
@@ -975,7 +1092,7 @@ fn snk_poll_event(_stdout: &mut Stdout, _mem: &mut Mem, args: &Vec<Rc<Object>>) 
     Ok(Some(Rc::new(ev)))
 }
 
-fn snk_screen_size(stdout: &mut Stdout, _mem: &mut Mem, _args: &Vec<Rc<Object>>) -> EvalResult {
+fn snk_screen_size(_stdout: &mut Stdout, _mem: &mut Mem, _args: &Vec<Rc<Object>>) -> EvalResult {
     let (w, h) = terminal::size()?;
     let result = object_vec![w as i64, h as i64];
 
