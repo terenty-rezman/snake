@@ -508,7 +508,7 @@ fn try_call_fn(fcn: &Object, arg_values: &Vec<Rc<Object>>, mem: &mut Mem) -> Eva
 
             mem.push_scope();
             for (name, value) in arg_names.iter().zip(arg_values.iter()) {
-                mem.insert_or_modify(name, Rc::clone(value));
+                mem.insert_to_local_scope(name, Rc::clone(value));
             }
 
             let result = interpret(&body.0, mem);
@@ -766,6 +766,11 @@ impl Mem {
         self.mem.pop();
     }
 
+    fn insert_to_local_scope(&mut self, var_name: &str, value: Rc<Object>) {
+        let current_scope = self.mem.last_mut().unwrap();
+        current_scope.insert(var_name.to_owned(), value);
+    }
+
     fn insert_or_modify(&mut self, var_name: &str, value: Rc<Object>) {
         // if any outer scopes contain variable with given name => change that binding
         // otherwise insert value into current (deepest) scope
@@ -774,12 +779,12 @@ impl Mem {
                 scope.insert(var_name.to_owned(), value);
             }
             None => {
-                let current_scope = self.mem.last_mut().unwrap();
-                current_scope.insert(var_name.to_owned(), value);
+                self.insert_to_local_scope(var_name, value);
             }
         }
     }
 
+    // find scope where given variable name exist (search from local scope to global)
     fn _find_containing_scope(&mut self, var_name: &str) -> Option<(&mut Scope, usize)> {
         let mut scope_depth = self.mem.len();
         for scope in self.mem.iter_mut().rev() {

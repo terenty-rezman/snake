@@ -1,0 +1,12 @@
+// calc fibonacci number
+
+fn fib(n) {
+    if n < 1 { 0 } 
+    else {
+        if n <= 2 { 1 }
+        else { fib(n - 1) + fib(n - 2) }
+    }
+}
+
+n = 20
+print("fib(", n, ") = ", fib(n))
