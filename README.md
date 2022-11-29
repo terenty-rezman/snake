@@ -10,7 +10,7 @@ tiny interpreted programming language with dynamic typing and just enough instuc
 ``` $ cargo run --release -- snake_src/snake_game.snk ```
 
 ### snake code example
-```
+```rust
 // calc fibonacci number
 
 fn fib(n) {
